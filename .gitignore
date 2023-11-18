@@ -1,0 +1,4 @@
+.build/
+*.pdn
+*.tga
+*.png
