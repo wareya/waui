@@ -13,7 +13,7 @@
 
 #include "images.h"
 
-#define USE_GEOMETRY_FOR_NINEPATCH 0
+#define USE_GEOMETRY_FOR_NINEPATCH 1
 
 float lerp(float a, float b, float t)
 {
@@ -243,6 +243,8 @@ struct WaControl
 
 struct WaUI
 {
+    friend WaControl;
+    
     void * userdata;
     uint64_t root_control_id = 0;
     uint64_t id = 0;
@@ -268,6 +270,10 @@ struct WaUI
     std::vector<uint64_t> get_children(uint64_t id);
     
     bool rounded_rendering = true;
+    
+protected:
+    uint64_t clicked_control = 0;
+    uint64_t clicked_control_count = 0;
     
 private:
     bool layout_dirty = true;
@@ -339,6 +345,23 @@ bool WaControl::handle_event(WaUI * ui, WaEvent event, Vec2 pos_offset)
         if (!global_rect.contains_point({event.x, event.y}))
             return false;
         printf("Press detected on control %lld\n", id);
+        ui->clicked_control_count += 1;
+        ui->clicked_control = id;
+        return true;
+    }
+    if (event.type == WaEvent::MOUSE_BUTTON_RELEASED)
+    {
+        if (!global_rect.contains_point({event.x, event.y}))
+        {
+            if (ui->clicked_control == id)
+            {
+                printf("release detected off of control %lld\n", id);
+                return true;
+            }
+            else
+                return false;
+        }
+        printf("release detected on control %lld\n", id);
         return true;
     }
     
@@ -382,6 +405,32 @@ void WaUI::feed_event(WaEvent event)
         size.x = event.x;
         size.y = event.y;
         layout_dirty = true;
+    }
+    // TODO: separate "gui" events from "global" events
+    if ((event.type == WaEvent::Type::MOUSE_BUTTON_RELEASED
+            || event.type == WaEvent::Type::MOUSE_BUTTON_PRESSED
+            || event.type == WaEvent::Type::MOUSE_POSITION)
+        and clicked_control != 0 and controls.count(clicked_control) != 0)
+    {
+        auto control = controls[clicked_control];
+        Vec2 offset = {0, 0};
+        auto parent_id = control->parent_id;
+        while (parent_id != 0 and controls.count(parent_id) != 0)
+        {
+            offset += controls[parent_id]->rect.pos;
+            parent_id = controls[parent_id]->parent_id;
+        }
+        if (!control->handle_event(this, event, offset) and event.type == WaEvent::Type::MOUSE_BUTTON_PRESSED)
+            clicked_control_count += 1;
+        if (event.type == WaEvent::Type::MOUSE_BUTTON_RELEASED)
+        {
+            clicked_control_count -= 1;
+            if (clicked_control_count == 0)
+            {
+                printf("reset clicked control... was %lld\n", clicked_control);
+                clicked_control = 0;
+            }
+        }
     }
     else
     {
