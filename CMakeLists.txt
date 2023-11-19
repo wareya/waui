@@ -1,3 +1,4 @@
+SET(CMAKE_COLOR_MAKEFILE ON)
 cmake_minimum_required(VERSION 3.15)
 project(waui_demo)
 
@@ -11,7 +12,7 @@ set(CMAKE_EXE_LINKER_FLAGS "-static-libgcc -static-libstdc++ -static")
 if (MSVC)
     add_compile_options(/W4 /WX)
 else()
-    add_compile_options(-Wall -Wextra -pedantic)
+    add_compile_options(-Wall -Wextra -pedantic -Wno-unused-parameter -fdiagnostics-color=always)
 endif()
 
 add_executable(${PROJECT_NAME} src/main.cpp)

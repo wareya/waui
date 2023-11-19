@@ -13,6 +13,8 @@
 
 #include "images.h"
 
+#define USE_GEOMETRY_FOR_NINEPATCH 0
+
 float lerp(float a, float b, float t)
 {
     return a * (1.0 - t) + b * t;
@@ -30,10 +32,18 @@ struct Color
     static const Color BLACK;
     static const Color GRAY;
     static const Color WHITE;
+    static const Color RED;
+    static const Color GREEN;
+    static const Color BLUE;
+    static const Color YELLOW;
 };
-constexpr const Color Color::BLACK{0, 0, 0, 255};
-constexpr const Color Color::GRAY{127, 127, 127, 255};
-constexpr const Color Color::WHITE{255, 255, 255, 255};
+constexpr const Color Color::BLACK  {  0,   0,   0, 255};
+constexpr const Color Color::GRAY   {127, 127, 127, 255};
+constexpr const Color Color::WHITE  {255, 255, 255, 255};
+constexpr const Color Color::RED    {255,   0,   0, 255};
+constexpr const Color Color::GREEN  {  0, 255,   0, 255};
+constexpr const Color Color::BLUE   {  0,   0, 255, 255};
+constexpr const Color Color::YELLOW {255, 255,   0, 255};
 
 struct Vec2
 {
@@ -47,7 +57,46 @@ struct Vec2
     Vec2 operator/(const Vec2& other) const { return {x / other.x, y / other.y}; }
 
     Vec2 operator*(float scalar) const { return {x * scalar, y * scalar}; }
-    Vec2 operator/(float divisor) const { return {x / divisor, y / divisor}; }
+    Vec2 operator/(float scalar) const { return {x / scalar, y / scalar}; }
+    
+    Vec2 & operator+=(const Vec2& other)
+    {
+        x += other.x;
+        y += other.y;
+        return *this;
+    }
+    Vec2 & operator-=(const Vec2& other)
+    {
+        x -= other.x;
+        y -= other.y;
+        return *this;
+    }
+    
+    Vec2 & operator*=(const Vec2& other)
+    {
+        x *= other.x;
+        y *= other.y;
+        return *this;
+    }
+    Vec2 & operator/=(const Vec2& other)
+    {
+        x /= other.x;
+        y /= other.y;
+        return *this;
+    }
+
+    Vec2 & operator*=(float scalar)
+    {
+        x *= scalar;
+        y *= scalar;
+        return *this;
+    }
+    Vec2 & operator/=(float scalar)
+    {
+        x /= scalar;
+        y /= scalar;
+        return *this;
+    }
     
     Vec2 lerp(const Vec2& other, const Vec2& t) const
     {
@@ -86,6 +135,11 @@ struct Rect2
         ret.set_end(end);
         return ret;
     }
+    bool contains_point(Vec2 point)
+    {
+        auto end = get_end();
+        return point.x >= pos.x && point.x <= end.x && point.y >= pos.y && point.y <= end.y;
+    }
 };
 
 struct WaRenderAPI
@@ -112,7 +166,6 @@ struct WaEvent
     {
         ACTION,
         RESIZE,
-        //MOUSE_MOTION,
         MOUSE_POSITION,
         MOUSE_BUTTON_PRESSED,
         MOUSE_BUTTON_RELEASED,
@@ -161,34 +214,38 @@ struct WaControl
     Rect2 rect;
     Rect2 anchor = {{0.1, 0.1}, {0.9, 0.9}};
     
-    Color bg_color = Color::GRAY;
+    Vec2 min_size;
+    
+    Color bg_color = Color::WHITE;
     Color modulate = Color::WHITE;
     
+    uint64_t id = 0;
     uint64_t parent_id = 0;
     
     std::vector<uint64_t> children;
     
     bool visible = true;
-    bool stop_mouse = false;
-    bool ignore_mouse = false;
+    bool draw_bg = true;
+    bool mouse_to_self = true;
+    bool mouse_to_children = true;
+    
+    void think(WaUI * ui, uint64_t delta) {}
+    
+    // returns whether the event has been "consumed"
+    bool feed_event(WaUI * ui, WaEvent event, Vec2 pos_offset);
+    // same
+    bool handle_event(WaUI * ui, WaEvent event, Vec2 pos_offset);
     
     ptrdiff_t find_child(uint64_t id);
+    void reflow(WaUI * ui);
+    void fit_rect(Rect2 rect);
 };
-
-ptrdiff_t WaControl::find_child(uint64_t id)
-{
-    for (size_t index = 0; index < children.size(); index++)
-    {
-        if (children[index] == id)
-            return index;
-    }
-    return -1;
-}
 
 struct WaUI
 {
     void * userdata;
     uint64_t root_control_id = 0;
+    uint64_t id = 0;
     
     WaUI();
     
@@ -225,9 +282,9 @@ private:
     
     void render_string(WaRenderAPI * api, float x, float y, const char * string);
     void render_ascii_char(WaRenderAPI * api, float x, float y, uint8_t c);
-    void render_control(WaRenderAPI * api, uint64_t id);
+    void render_control(WaRenderAPI * api, uint64_t id, Vec2 offset);
     
-    void render_ninepatch(WaRenderAPI * api, uint64_t texture, Rect2 dest, Rect2 src_outer, Rect2 src_inner)
+    void render_ninepatch(WaRenderAPI * api, uint64_t texture, Rect2 dest, Rect2 src_outer, Rect2 src_inner, Vec2 texture_size, Color color)
     {
         if (rounded_rendering)
             dest = dest.round();
@@ -251,14 +308,68 @@ private:
             for (int iy = 0; iy < 3; iy++)
             {
                 api->draw_texture_rect(userdata,
-                    dests[ix].pos.x, dests[iy].pos.y, dests[ix].size.x, dests[iy].size.y, 255, 255, 255, 255,
-                    test_texture, srces[ix].pos.x, srces[iy].pos.y, srces[ix].size.x, srces[iy].size.y,
-                    test_image_width, test_image_height
+                    dests[ix].pos.x, dests[iy].pos.y, dests[ix].size.x, dests[iy].size.y, color.r, color.g, color.b, color.a,
+                    texture, srces[ix].pos.x, srces[iy].pos.y, srces[ix].size.x, srces[iy].size.y,
+                    texture_size.x, texture_size.y
                 );
             }
         }
     }
 };
+
+bool WaControl::feed_event(WaUI * ui, WaEvent event, Vec2 pos_offset)
+{
+    if (!visible)
+        return false;
+    
+    for (size_t i = children.size() - 1; i < children.size(); i -= 1)
+    {
+        auto control = ui->get_control(children[i]);
+        if (control->feed_event(ui, event, pos_offset + rect.pos))
+            return true;
+    }
+    return handle_event(ui, event, pos_offset);
+}
+bool WaControl::handle_event(WaUI * ui, WaEvent event, Vec2 pos_offset)
+{
+    auto global_rect = rect;
+    global_rect.pos += pos_offset;
+    if (event.type == WaEvent::MOUSE_BUTTON_PRESSED)
+    {
+        if (!global_rect.contains_point({event.x, event.y}))
+            return false;
+        printf("Press detected on control %lld\n", id);
+        return true;
+    }
+    
+    return false;
+}
+
+ptrdiff_t WaControl::find_child(uint64_t id)
+{
+    for (size_t index = 0; index < children.size(); index++)
+    {
+        if (children[index] == id)
+            return index;
+    }
+    return -1;
+}
+
+void WaControl::reflow(WaUI * ui)
+{
+    for (auto child_id : children)
+    {
+        auto control = ui->get_control(child_id);
+        control->fit_rect({{0, 0}, rect.size});
+        control->reflow(ui);
+    }
+}
+
+void WaControl::fit_rect(Rect2 parent_rect)
+{
+    rect.pos = parent_rect.pos.lerp(parent_rect.size, anchor.pos);
+    rect.set_end(parent_rect.pos.lerp(parent_rect.size, anchor.size));
+}
 
 WaUI::WaUI()
 {
@@ -272,13 +383,19 @@ void WaUI::feed_event(WaEvent event)
         size.y = event.y;
         layout_dirty = true;
     }
+    else
+    {
+        controls[root_control_id]->feed_event(this, event, {0, 0});
+    }
 }
 uint64_t WaUI::control_create()
 {
     auto id = next_id;
     next_id += 1;
+    auto control = std::make_shared<WaControl>();
+    control->id = id;
     
-    controls.insert({id, std::make_shared<WaControl>()});
+    controls.insert({id, control});
     
     return id;
 }
@@ -362,14 +479,11 @@ void WaUI::think(uint64_t delta)
     if (layout_dirty)
     {
         auto & control = controls[root_control_id];
-        auto & control_rect = control->rect;
+        //auto & control_rect = control->rect;
         
         //printf("resizing %d (via %f %f)\n", root_control_id, control->anchor.size.x, control->anchor.size.y);
-        
-        control_rect.pos = Vec2{0, 0}.lerp(size, control->anchor.pos);
-        control_rect.set_end(Vec2{0, 0}.lerp(size, control->anchor.size));
-        
-        //control->reflow(this);
+        control->fit_rect({{0, 0}, {size}});
+        control->reflow(this);
         
         layout_dirty = false;
     }
@@ -384,7 +498,7 @@ void WaUI::think(uint64_t delta)
 void WaUI::render_scene(WaRenderAPI * api)
 {
     api->draw_begin_frame(userdata);
-    render_control(api, root_control_id);
+    render_control(api, root_control_id, {0, 0});
     
     //render_string(api, 100, 100, "Drawing random text to the screen!!!");
     
@@ -447,24 +561,27 @@ void WaUI::render_ascii_char(WaRenderAPI * api, float x, float y, uint8_t c)
     );
 }
 
-void WaUI::render_control(WaRenderAPI * api, uint64_t id)
+void WaUI::render_control(WaRenderAPI * api, uint64_t id, Vec2 offset)
 {
     if (controls.count(id) == 0)
         return;
     
     auto & control = controls[id];
-    auto pos = control->rect.pos;
-    auto size = control->rect.size;
-    auto c = control->bg_color;
-    //api->draw_rect(userdata, pos.x, pos.y, size.x, size.y, c.r, c.g, c.b, c.a);
     
-    render_ninepatch(api, test_texture, control->rect, {{0, 0}, {8, 8}}, {{4, 4}, {0, 0}});
+    if (!control->visible)
+        return;
+    
+    auto pos = control->rect.pos + offset;
+    auto size = control->rect.size;
+    
+    if (control->draw_bg)
+        render_ninepatch(api, test_texture, {pos, size}, {{0, 0}, {8, 8}}, {{4, 4}, {0, 0}}, {test_image_width, test_image_height}, control->bg_color);
     
     //printf("rendering %d (%f %f %f %f)\n", id, pos.x, pos.y, size.x, size.y);
     
     for (auto child_id : get_children(id))
     {
-        //render_control(api, child_id);
+        render_control(api, child_id, pos);
     }
 };
 
@@ -476,10 +593,11 @@ void feed_event_to_ui(SDL_Event event, WaUI & ui)
             ui.feed_event(WaEvent{WaEvent::Type::RESIZE, 0, (float)event.window.data1, (float)event.window.data2, 0});
     }
     else if (event.type == SDL_MOUSEMOTION)
-    {
-        //ui.feed_event(WaEvent{WaEvent::Type::MOUSE_MOTION, 0, (float)event.window.xrel, (float)event.window.yrel, 0});
         ui.feed_event(WaEvent{WaEvent::Type::MOUSE_POSITION, 0, (float)event.motion.x, (float)event.motion.y, 0});
-    }
+    else if (event.type == SDL_MOUSEBUTTONDOWN)
+        ui.feed_event(WaEvent{WaEvent::Type::MOUSE_BUTTON_PRESSED, event.button.button, (float)event.button.x, (float)event.button.y, 0});
+    else if (event.type == SDL_MOUSEBUTTONUP)
+        ui.feed_event(WaEvent{WaEvent::Type::MOUSE_BUTTON_RELEASED, event.button.button, (float)event.button.x, (float)event.button.y, 0});
     else if (event.type == SDL_KEYDOWN)
     {
         auto wa_event = WaEvent{WaEvent::Type::ACTION, 0, 0, 0, 1};
@@ -539,6 +657,7 @@ int main()
     {
         control->rect.pos = {4, 52};
         control->rect.size = {48, 32};
+        control->bg_color = Color::RED;
         printf("%f %f\n", control->rect.pos.x, control->rect.pos.y);
     }
     else
@@ -554,7 +673,7 @@ int main()
     auto sdl_begin_frame = [](void * userdata)
     {
         auto renderer = ((CallbackContext *) userdata)->renderer;
-        SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
+        SDL_SetRenderDrawColor(renderer, 64, 64, 64, 255);
         SDL_RenderClear(renderer);
     };
     auto sdl_finish_frame = [](void * userdata)
@@ -585,19 +704,25 @@ int main()
         
         auto texture = textures[tex];
         
+#if !USE_GEOMETRY_FOR_NINEPATCH
+        SDL_Rect src = {(int)tex_x, (int)tex_y, (int)tex_w, (int)tex_h};
+        SDL_Rect dest = {(int)x, (int)y, (int)w, (int)h};
+        
         SDL_SetRenderDrawColor(renderer, r, g, b, a);
-        //SDL_RenderCopy(renderer, texture, &src, &dest);
+        SDL_RenderCopy(renderer, texture, &src, &dest);
+#else // !USE_GEOMETRY_FOR_NINEPATCH
         
         SDL_Vertex verts[4] = {
-            {{x    , y    }, {255, 255, 255, 255}, {(tex_x        ) / tex_size_w, (tex_y        ) / tex_size_h}},
-            {{x + w, y    }, {255, 255, 255, 255}, {(tex_x + tex_w) / tex_size_w, (tex_y        ) / tex_size_h}},
-            {{x    , y + h}, {255, 255, 255, 255}, {(tex_x        ) / tex_size_w, (tex_y + tex_h) / tex_size_h}},
-            {{x + w, y + h}, {255, 255, 255, 255}, {(tex_x + tex_w) / tex_size_w, (tex_y + tex_h) / tex_size_h}},
+            {{x    , y    }, {r, g, b, a}, {(tex_x        ) / tex_size_w, (tex_y        ) / tex_size_h}},
+            {{x + w, y    }, {r, g, b, a}, {(tex_x + tex_w) / tex_size_w, (tex_y        ) / tex_size_h}},
+            {{x    , y + h}, {r, g, b, a}, {(tex_x        ) / tex_size_w, (tex_y + tex_h) / tex_size_h}},
+            {{x + w, y + h}, {r, g, b, a}, {(tex_x + tex_w) / tex_size_w, (tex_y + tex_h) / tex_size_h}},
         };
         
         int indexes[6] = {0, 1, 2, 2, 1, 3};
         
         SDL_RenderGeometry(renderer, texture, verts, 4, indexes, 6);
+#endif // else of #if !USE_GEOMETRY_FOR_NINEPATCH
     };
     
     auto sdl_texture_create = [](void * userdata, uint32_t w, uint32_t h, const unsigned char * data)
@@ -653,6 +778,8 @@ int main()
         ui.render_scene(&api);
         ui.think(new_time - time);
         time = new_time;
+        
+        SDL_Delay(1);
     }
     exit:
     
