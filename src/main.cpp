@@ -2,6 +2,7 @@
 // https://jsfiddle.net/vwoeja89/13/
 
 #include <cstdint>
+#include <cmath>
 #include <vector>
 #include <unordered_map>
 #include <memory>
@@ -56,6 +57,7 @@ struct Vec2
         };
     }
     Vec2 lerp(const Vec2& other, float t) const { return lerp(other, {t, t}); }
+    Vec2 round() const { return {roundf(x), roundf(y)}; };
     
 private:
     static float lerp(float a, float b, float t)
@@ -68,6 +70,22 @@ struct Rect2
 {
     Vec2 pos;
     Vec2 size;
+    Vec2 get_end() const
+    {
+        return pos + size;
+    }
+    void set_end(Vec2 end)
+    {
+        size = end - pos;
+    }
+    Rect2 round() const
+    {
+        auto end = get_end().round();
+        auto ret = *this;
+        ret.pos = pos.round();
+        ret.set_end(end);
+        return ret;
+    }
 };
 
 struct WaRenderAPI
@@ -79,12 +97,13 @@ struct WaRenderAPI
     void (*draw_texture_rect)(void * userdata,
         float x, float y, float w, float h,
         uint8_t r, uint8_t g, uint8_t b, uint8_t a,
-        uint64_t tex, float tex_x, float tex_y, float tex_w, float tex_h);
+        uint64_t tex, float tex_x, float tex_y, float tex_w, float tex_h,
+        uint32_t tex_size_w, uint32_t tex_size_h);
     
     // The given image data does not become owned by your application; you must copy it.
-    uint64_t (*draw_texture_create)(void * userdata, uint32_t w, uint32_t h, const unsigned char * data);
+    uint64_t (*texture_create)(void * userdata, uint32_t w, uint32_t h, const unsigned char * data);
     
-    void (*draw_texture_destroy)(void * userdata, uint32_t texture_id);
+    void (*texture_destroy)(void * userdata, uint32_t texture_id);
 };
 
 struct WaEvent
@@ -137,6 +156,35 @@ struct WaEvent
 struct WaUI;
 struct WaControl;
 
+struct WaControl
+{
+    Rect2 rect;
+    Rect2 anchor = {{0.1, 0.1}, {0.9, 0.9}};
+    
+    Color bg_color = Color::GRAY;
+    Color modulate = Color::WHITE;
+    
+    uint64_t parent_id = 0;
+    
+    std::vector<uint64_t> children;
+    
+    bool visible = true;
+    bool stop_mouse = false;
+    bool ignore_mouse = false;
+    
+    ptrdiff_t find_child(uint64_t id);
+};
+
+ptrdiff_t WaControl::find_child(uint64_t id)
+{
+    for (size_t index = 0; index < children.size(); index++)
+    {
+        if (children[index] == id)
+            return index;
+    }
+    return -1;
+}
+
 struct WaUI
 {
     void * userdata;
@@ -162,7 +210,13 @@ struct WaUI
     std::shared_ptr<WaControl> get_control(uint64_t id);
     std::vector<uint64_t> get_children(uint64_t id);
     
+    bool rounded_rendering = true;
+    
 private:
+    bool layout_dirty = true;
+    
+    Vec2 size = {800, 600};
+    
     uint64_t test_texture = 0;
     uint64_t font_texture = 0;
     
@@ -172,39 +226,39 @@ private:
     void render_string(WaRenderAPI * api, float x, float y, const char * string);
     void render_ascii_char(WaRenderAPI * api, float x, float y, uint8_t c);
     void render_control(WaRenderAPI * api, uint64_t id);
-};
-
-struct WaControl
-{
-    Rect2 rect;
     
-    float anchor_left = 0;
-    float anchor_right = 1;
-    float anchor_top = 0;
-    float anchor_bottom = 1;
-    
-    Color bg_color = Color::GRAY;
-    Color modulate = Color::WHITE;
-    
-    uint64_t parent_id = 0;
-    
-    std::vector<uint64_t> children;
-    
-    bool stop_mouse = false;
-    bool ignore_mouse = false;
-    
-    ptrdiff_t find_child(uint64_t id);
-};
-
-ptrdiff_t WaControl::find_child(uint64_t id)
-{
-    for (size_t index = 0; index < children.size(); index++)
+    void render_ninepatch(WaRenderAPI * api, uint64_t texture, Rect2 dest, Rect2 src_outer, Rect2 src_inner)
     {
-        if (children[index] == id)
-            return index;
+        if (rounded_rendering)
+            dest = dest.round();
+        
+        auto corner_a = src_inner.pos - src_outer.pos;
+        auto corner_b = dest.size - (src_outer.get_end() - src_inner.get_end());
+        
+        auto rect_a = Rect2{dest.pos, corner_a};
+        auto rect_b = Rect2{dest.pos + corner_a, corner_b - corner_a};
+        auto rect_c = Rect2{dest.pos + corner_b, dest.size - corner_b};
+        
+        auto src_a = Rect2{src_outer.pos, src_inner.pos - src_outer.pos};
+        auto src_b = Rect2{src_inner.pos, src_inner.size};
+        auto src_c = Rect2{src_inner.get_end(), src_outer.get_end() - src_inner.get_end()};
+        
+        Rect2 dests[3] = {rect_a, rect_b, rect_c};
+        Rect2 srces[3] = {src_a, src_b, src_c};
+        
+        for (int ix = 0; ix < 3; ix++)
+        {
+            for (int iy = 0; iy < 3; iy++)
+            {
+                api->draw_texture_rect(userdata,
+                    dests[ix].pos.x, dests[iy].pos.y, dests[ix].size.x, dests[iy].size.y, 255, 255, 255, 255,
+                    test_texture, srces[ix].pos.x, srces[iy].pos.y, srces[ix].size.x, srces[iy].size.y,
+                    test_image_width, test_image_height
+                );
+            }
+        }
     }
-    return -1;
-}
+};
 
 WaUI::WaUI()
 {
@@ -212,7 +266,12 @@ WaUI::WaUI()
 }
 void WaUI::feed_event(WaEvent event)
 {
-    printf("%d\n", event.type);
+    if (event.type == WaEvent::Type::RESIZE)
+    {
+        size.x = event.x;
+        size.y = event.y;
+        layout_dirty = true;
+    }
 }
 uint64_t WaUI::control_create()
 {
@@ -296,6 +355,31 @@ std::vector<uint64_t> WaUI::get_children(uint64_t id)
 void WaUI::think(uint64_t delta)
 {
     delta = delta;
+    
+    if (controls.count(root_control_id) == 0)
+        return;
+    
+    if (layout_dirty)
+    {
+        auto & control = controls[root_control_id];
+        auto & control_rect = control->rect;
+        
+        //printf("resizing %d (via %f %f)\n", root_control_id, control->anchor.size.x, control->anchor.size.y);
+        
+        control_rect.pos = Vec2{0, 0}.lerp(size, control->anchor.pos);
+        control_rect.set_end(Vec2{0, 0}.lerp(size, control->anchor.size));
+        
+        //control->reflow(this);
+        
+        layout_dirty = false;
+    }
+    
+    /*
+    for (auto child_id : get_children(root_control_id))
+    {
+        render_control(api, child_id);
+    }
+    */
 }
 void WaUI::render_scene(WaRenderAPI * api)
 {
@@ -309,7 +393,7 @@ void WaUI::render_scene(WaRenderAPI * api)
 
 void WaUI::init(WaRenderAPI * api)
 {
-    test_texture = api->draw_texture_create(userdata, test_image_width, test_image_height, test_image);
+    test_texture = api->texture_create(userdata, test_image_width, test_image_height, test_image);
     
     auto font_data = (unsigned char *)malloc(font_image_width * font_image_height * 4);
     auto i = 0;
@@ -331,15 +415,15 @@ void WaUI::init(WaRenderAPI * api)
             }
         }
     }
-    font_texture = api->draw_texture_create(userdata, font_image_width, font_image_height, font_data);
+    font_texture = api->texture_create(userdata, font_image_width, font_image_height, font_data);
     
     free(font_data);
 };
 void WaUI::clean_up(WaRenderAPI * api)
 {
-    api->draw_texture_destroy(userdata, test_texture);
+    api->texture_destroy(userdata, test_texture);
     test_texture = 0;
-    api->draw_texture_destroy(userdata, font_texture);
+    api->texture_destroy(userdata, font_texture);
     font_texture = 0;
 };
 void WaUI::render_string(WaRenderAPI * api, float x, float y, const char * string)
@@ -358,7 +442,8 @@ void WaUI::render_ascii_char(WaRenderAPI * api, float x, float y, uint8_t c)
     api->draw_texture_rect(userdata,
         x, y, 7, 13,
         255, 255, 255, 255,
-        font_texture, c_x, c_y, 7, 13
+        font_texture, c_x, c_y, 7, 13,
+        font_image_width, font_image_height
     );
 }
 
@@ -367,27 +452,21 @@ void WaUI::render_control(WaRenderAPI * api, uint64_t id)
     if (controls.count(id) == 0)
         return;
     
-    //printf("rendering %d\n", id);
-    
     auto & control = controls[id];
     auto pos = control->rect.pos;
     auto size = control->rect.size;
     auto c = control->bg_color;
-    api->draw_rect(userdata, pos.x, pos.y, size.x, size.y, c.r, c.g, c.b, c.a);
+    //api->draw_rect(userdata, pos.x, pos.y, size.x, size.y, c.r, c.g, c.b, c.a);
+    
+    render_ninepatch(api, test_texture, control->rect, {{0, 0}, {8, 8}}, {{4, 4}, {0, 0}});
+    
+    //printf("rendering %d (%f %f %f %f)\n", id, pos.x, pos.y, size.x, size.y);
     
     for (auto child_id : get_children(id))
     {
-        render_control(api, child_id);
+        //render_control(api, child_id);
     }
 };
-
-struct CallbackContext
-{
-    SDL_Renderer * renderer;
-    std::unordered_map<uint64_t, SDL_Texture *> textures;
-    uint64_t next_id = 1;
-};
-
 
 void feed_event_to_ui(SDL_Event event, WaUI & ui)
 {
@@ -425,6 +504,13 @@ void feed_event_to_ui(SDL_Event event, WaUI & ui)
             ui.feed_event(wa_event);
     }
 }
+
+struct CallbackContext
+{
+    SDL_Renderer * renderer;
+    std::unordered_map<uint64_t, SDL_Texture *> textures;
+    uint64_t next_id = 1;
+};
 
 int main()
 {
@@ -490,28 +576,28 @@ int main()
     auto sdl_draw_texture_rect = [](void * userdata,
         float x, float y, float w, float h,
         uint8_t r, uint8_t g, uint8_t b, uint8_t a,
-        uint64_t tex, float tex_x, float tex_y, float tex_w, float tex_h)
+        uint64_t tex, float tex_x, float tex_y, float tex_w, float tex_h,
+        uint32_t tex_size_w, uint32_t tex_size_h)
     {
         auto context = (CallbackContext *) userdata;
         auto renderer = context->renderer;
         auto & textures = context->textures;
         
-        SDL_Rect dest;
-        dest.x = x;
-        dest.y = y;
-        dest.w = w;
-        dest.h = h;
-        
-        SDL_Rect src;
-        src.x = tex_x;
-        src.y = tex_y;
-        src.w = tex_w;
-        src.h = tex_h;
-        
         auto texture = textures[tex];
         
         SDL_SetRenderDrawColor(renderer, r, g, b, a);
-        SDL_RenderCopy(renderer, texture, &src, &dest);
+        //SDL_RenderCopy(renderer, texture, &src, &dest);
+        
+        SDL_Vertex verts[4] = {
+            {{x    , y    }, {255, 255, 255, 255}, {(tex_x        ) / tex_size_w, (tex_y        ) / tex_size_h}},
+            {{x + w, y    }, {255, 255, 255, 255}, {(tex_x + tex_w) / tex_size_w, (tex_y        ) / tex_size_h}},
+            {{x    , y + h}, {255, 255, 255, 255}, {(tex_x        ) / tex_size_w, (tex_y + tex_h) / tex_size_h}},
+            {{x + w, y + h}, {255, 255, 255, 255}, {(tex_x + tex_w) / tex_size_w, (tex_y + tex_h) / tex_size_h}},
+        };
+        
+        int indexes[6] = {0, 1, 2, 2, 1, 3};
+        
+        SDL_RenderGeometry(renderer, texture, verts, 4, indexes, 6);
     };
     
     auto sdl_texture_create = [](void * userdata, uint32_t w, uint32_t h, const unsigned char * data)
