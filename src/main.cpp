@@ -282,6 +282,8 @@ private:
     
     uint64_t test_texture = 0;
     uint64_t font_texture = 0;
+    std::vector<int> font_advance;
+    std::vector<int> font_offset;
     
     uint64_t next_id = 1;
     std::unordered_map<uint64_t, std::shared_ptr<WaControl>> controls;
@@ -290,37 +292,7 @@ private:
     void render_ascii_char(WaRenderAPI * api, float x, float y, uint8_t c);
     void render_control(WaRenderAPI * api, uint64_t id, Vec2 offset);
     
-    void render_ninepatch(WaRenderAPI * api, uint64_t texture, Rect2 dest, Rect2 src_outer, Rect2 src_inner, Vec2 texture_size, Color color)
-    {
-        if (rounded_rendering)
-            dest = dest.round();
-        
-        auto corner_a = src_inner.pos - src_outer.pos;
-        auto corner_b = dest.size - (src_outer.get_end() - src_inner.get_end());
-        
-        auto rect_a = Rect2{dest.pos, corner_a};
-        auto rect_b = Rect2{dest.pos + corner_a, corner_b - corner_a};
-        auto rect_c = Rect2{dest.pos + corner_b, dest.size - corner_b};
-        
-        auto src_a = Rect2{src_outer.pos, src_inner.pos - src_outer.pos};
-        auto src_b = Rect2{src_inner.pos, src_inner.size};
-        auto src_c = Rect2{src_inner.get_end(), src_outer.get_end() - src_inner.get_end()};
-        
-        Rect2 dests[3] = {rect_a, rect_b, rect_c};
-        Rect2 srces[3] = {src_a, src_b, src_c};
-        
-        for (int ix = 0; ix < 3; ix++)
-        {
-            for (int iy = 0; iy < 3; iy++)
-            {
-                api->draw_texture_rect(userdata,
-                    dests[ix].pos.x, dests[iy].pos.y, dests[ix].size.x, dests[iy].size.y, color.r, color.g, color.b, color.a,
-                    texture, srces[ix].pos.x, srces[iy].pos.y, srces[ix].size.x, srces[iy].size.y,
-                    texture_size.x, texture_size.y
-                );
-            }
-        }
-    }
+    void render_ninepatch(WaRenderAPI * api, uint64_t texture, Rect2 dest, Rect2 src_outer, Rect2 src_inner, Vec2 texture_size, Color color);
 };
 
 bool WaControl::feed_event(WaUI * ui, WaEvent event, Vec2 pos_offset)
@@ -413,6 +385,7 @@ void WaUI::feed_event(WaEvent event)
         and clicked_control != 0 and controls.count(clicked_control) != 0)
     {
         auto control = controls[clicked_control];
+        // calculate global position of parent
         Vec2 offset = {0, 0};
         auto parent_id = control->parent_id;
         while (parent_id != 0 and controls.count(parent_id) != 0)
@@ -420,6 +393,7 @@ void WaUI::feed_event(WaEvent event)
             offset += controls[parent_id]->rect.pos;
             parent_id = controls[parent_id]->parent_id;
         }
+        // handle clicked-on-specific-element event weirdness
         if (!control->handle_event(this, event, offset) and event.type == WaEvent::Type::MOUSE_BUTTON_PRESSED)
             clicked_control_count += 1;
         if (event.type == WaEvent::Type::MOUSE_BUTTON_RELEASED)
@@ -633,6 +607,38 @@ void WaUI::render_control(WaRenderAPI * api, uint64_t id, Vec2 offset)
         render_control(api, child_id, pos);
     }
 };
+
+void WaUI::render_ninepatch(WaRenderAPI * api, uint64_t texture, Rect2 dest, Rect2 src_outer, Rect2 src_inner, Vec2 texture_size, Color color)
+{
+    if (rounded_rendering)
+        dest = dest.round();
+    
+    auto corner_a = src_inner.pos - src_outer.pos;
+    auto corner_b = dest.size - (src_outer.get_end() - src_inner.get_end());
+    
+    auto rect_a = Rect2{dest.pos, corner_a};
+    auto rect_b = Rect2{dest.pos + corner_a, corner_b - corner_a};
+    auto rect_c = Rect2{dest.pos + corner_b, dest.size - corner_b};
+    
+    auto src_a = Rect2{src_outer.pos, src_inner.pos - src_outer.pos};
+    auto src_b = Rect2{src_inner.pos, src_inner.size};
+    auto src_c = Rect2{src_inner.get_end(), src_outer.get_end() - src_inner.get_end()};
+    
+    Rect2 dests[3] = {rect_a, rect_b, rect_c};
+    Rect2 srces[3] = {src_a, src_b, src_c};
+    
+    for (int ix = 0; ix < 3; ix++)
+    {
+        for (int iy = 0; iy < 3; iy++)
+        {
+            api->draw_texture_rect(userdata,
+                dests[ix].pos.x, dests[iy].pos.y, dests[ix].size.x, dests[iy].size.y, color.r, color.g, color.b, color.a,
+                texture, srces[ix].pos.x, srces[iy].pos.y, srces[ix].size.x, srces[iy].size.y,
+                texture_size.x, texture_size.y
+            );
+        }
+    }
+}
 
 void feed_event_to_ui(SDL_Event event, WaUI & ui)
 {
