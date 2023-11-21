@@ -144,6 +144,16 @@ struct Rect2
 
 struct WaRenderAPI
 {
+    WaRenderAPI()
+    {
+        draw_begin_frame = nullptr;
+        draw_finish_frame = nullptr;
+        draw_rect = nullptr;
+        draw_texture_rect = nullptr;
+        texture_create = nullptr;
+        texture_destroy = nullptr;
+    }
+    
     void (*draw_begin_frame)(void * userdata);
     void (*draw_finish_frame)(void * userdata);
     void (*draw_rect)(void * userdata, float x, float y, float w, float h, uint8_t r, uint8_t g, uint8_t b, uint8_t a);
@@ -213,6 +223,14 @@ struct WaControlAPI;
 
 struct WaControlAPI
 {
+    WaControlAPI()
+    {
+        think = nullptr;
+        handle_event = nullptr;
+        reflow = nullptr;
+        render = nullptr;
+    }
+    
     void (*think)(WaControl * control, WaUI * ui, uint64_t delta);
     void (*handle_event)(WaControl * control, WaUI * ui, uint64_t delta);
     void (*reflow)(WaControl * control, WaUI * ui, uint64_t delta);
@@ -239,18 +257,19 @@ struct WaControl
     bool mouse_to_self = true;
     bool mouse_to_children = true;
     
-    void think(WaUI * ui, uint64_t delta) {}
-    
     // returns whether the event has been "consumed"
     bool feed_event(WaUI * ui, WaEvent event, Vec2 pos_offset);
-    // same
-    bool handle_event(WaUI * ui, WaEvent event, Vec2 pos_offset);
     
+    void fit_rect(Rect2 rect);
     ptrdiff_t find_child(uint64_t id);
+    
+    // returns whether the event has been "consumed"
+    void think(WaUI * ui, uint64_t delta) {}
+    bool handle_event(WaUI * ui, WaEvent event, Vec2 pos_offset);
     void reflow(WaUI * ui);
     void render(WaUI * ui, WaRenderAPI * api);
     
-    void fit_rect(Rect2 rect);
+    WaControlAPI * callbacks = nullptr;
 };
 
 struct WaUI
@@ -827,15 +846,13 @@ int main()
         SDL_DestroyTexture(texture);
     };
     
-    auto api = WaRenderAPI
-    {
-        sdl_begin_frame,
-        sdl_finish_frame,
-        sdl_draw_rect,
-        sdl_draw_texture_rect,
-        sdl_texture_create,
-        sdl_texture_destroy,
-    };
+    auto api = WaRenderAPI();
+    api.draw_begin_frame = sdl_begin_frame;
+    api.draw_finish_frame = sdl_finish_frame;
+    api.draw_rect = sdl_draw_rect;
+    api.draw_texture_rect = sdl_draw_texture_rect;
+    api.texture_create = sdl_texture_create;
+    api.texture_destroy = sdl_texture_destroy;
     
     ui.init(&api);
     
