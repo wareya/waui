@@ -164,15 +164,16 @@ struct WaEvent
 {
     enum Type
     {
+        NONE,
         ACTION,
         RESIZE,
         MOUSE_POSITION,
         MOUSE_BUTTON_PRESSED,
         MOUSE_BUTTON_RELEASED,
-        NONE,
     };
     enum Action
     {
+        INVALID,
         UP,
         DOWN,
         LEFT,
@@ -181,10 +182,11 @@ struct WaEvent
         PREV,
         NEXT_ALT,
         PREV_ALT,
+        PGUP,
+        PGDN,
         CONFIRM,
         CANCEL,
         ESCAPE,
-        INVALID,
     };
     enum Button
     {
@@ -205,9 +207,17 @@ struct WaEvent
     uint64_t data = 0; // e.g. pressed / released
 };
 
-
 struct WaUI;
 struct WaControl;
+struct WaControlAPI;
+
+struct WaControlAPI
+{
+    void (*think)(WaControl * control, WaUI * ui, uint64_t delta);
+    void (*handle_event)(WaControl * control, WaUI * ui, uint64_t delta);
+    void (*reflow)(WaControl * control, WaUI * ui, uint64_t delta);
+    void (*render)(WaControl * control, WaUI * ui, WaRenderAPI * api);
+};
 
 struct WaControl
 {
@@ -238,6 +248,8 @@ struct WaControl
     
     ptrdiff_t find_child(uint64_t id);
     void reflow(WaUI * ui);
+    void render(WaUI * ui, WaRenderAPI * api);
+    
     void fit_rect(Rect2 rect);
 };
 
@@ -265,32 +277,35 @@ struct WaUI
     uint64_t control_get_parent(uint64_t id);
     // Should only be used temporarily to modify the properties of the control.
     // The tree should not be modified while the control is borrowed.
-    // It is not instant UB to do so, but it may leave WaUI in an incoherent state and trigger UB later.
+    // It is not instant UB to do so, but it may leave WaUI in an invalid state and trigger UB later, or cause memory leaks.
     std::shared_ptr<WaControl> get_control(uint64_t id);
     std::vector<uint64_t> get_children(uint64_t id);
     
-    bool rounded_rendering = true;
+    bool px_snapped_rendering = true;
     
 protected:
     uint64_t clicked_control = 0;
     uint64_t clicked_control_count = 0;
+    
+    uint64_t test_texture = 0;
+    uint64_t font_texture = 0;
     
 private:
     bool layout_dirty = true;
     
     Vec2 size = {800, 600};
     
-    uint64_t test_texture = 0;
-    uint64_t font_texture = 0;
     std::vector<int> font_advance;
     std::vector<int> font_offset;
+    
+    Vec2 draw_offset;
     
     uint64_t next_id = 1;
     std::unordered_map<uint64_t, std::shared_ptr<WaControl>> controls;
     
     void render_string(WaRenderAPI * api, float x, float y, const char * string);
     void render_ascii_char(WaRenderAPI * api, float x, float y, uint8_t c);
-    void render_control(WaRenderAPI * api, uint64_t id, Vec2 offset);
+    void render_control(WaRenderAPI * api, uint64_t id);
     
     void render_ninepatch(WaRenderAPI * api, uint64_t texture, Rect2 dest, Rect2 src_outer, Rect2 src_inner, Vec2 texture_size, Color color);
 };
@@ -358,6 +373,15 @@ void WaControl::reflow(WaUI * ui)
         control->fit_rect({{0, 0}, rect.size});
         control->reflow(ui);
     }
+}
+
+void WaControl::render(WaUI * ui, WaRenderAPI * api)
+{
+    Vec2 pos = {0, 0};
+    Vec2 size = rect.size;
+    
+    if (draw_bg)
+        ui->render_ninepatch(api, ui->test_texture, {pos, size}, {{0, 0}, {8, 8}}, {{4, 4}, {0, 0}}, {test_image_width, test_image_height}, bg_color);
 }
 
 void WaControl::fit_rect(Rect2 parent_rect)
@@ -510,18 +534,13 @@ void WaUI::think(uint64_t delta)
         
         layout_dirty = false;
     }
-    
-    /*
-    for (auto child_id : get_children(root_control_id))
-    {
-        render_control(api, child_id);
-    }
-    */
 }
 void WaUI::render_scene(WaRenderAPI * api)
 {
     api->draw_begin_frame(userdata);
-    render_control(api, root_control_id, {0, 0});
+    
+    draw_offset = {0, 0};
+    render_control(api, root_control_id);
     
     //render_string(api, 100, 100, "Drawing random text to the screen!!!");
     
@@ -584,7 +603,7 @@ void WaUI::render_ascii_char(WaRenderAPI * api, float x, float y, uint8_t c)
     );
 }
 
-void WaUI::render_control(WaRenderAPI * api, uint64_t id, Vec2 offset)
+void WaUI::render_control(WaRenderAPI * api, uint64_t id)
 {
     if (controls.count(id) == 0)
         return;
@@ -594,23 +613,27 @@ void WaUI::render_control(WaRenderAPI * api, uint64_t id, Vec2 offset)
     if (!control->visible)
         return;
     
-    auto pos = control->rect.pos + offset;
-    auto size = control->rect.size;
+    auto pos = control->rect.pos + draw_offset;
+    auto prev_draw_offset = draw_offset;
     
-    if (control->draw_bg)
-        render_ninepatch(api, test_texture, {pos, size}, {{0, 0}, {8, 8}}, {{4, 4}, {0, 0}}, {test_image_width, test_image_height}, control->bg_color);
+    draw_offset = pos;
     
+    control->render(this, api);
     //printf("rendering %d (%f %f %f %f)\n", id, pos.x, pos.y, size.x, size.y);
     
     for (auto child_id : get_children(id))
     {
-        render_control(api, child_id, pos);
+        render_control(api, child_id);
     }
+    
+    draw_offset = prev_draw_offset;
 };
 
 void WaUI::render_ninepatch(WaRenderAPI * api, uint64_t texture, Rect2 dest, Rect2 src_outer, Rect2 src_inner, Vec2 texture_size, Color color)
 {
-    if (rounded_rendering)
+    dest.pos += draw_offset;
+    
+    if (px_snapped_rendering)
         dest = dest.round();
     
     auto corner_a = src_inner.pos - src_outer.pos;
