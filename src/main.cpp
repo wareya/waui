@@ -312,6 +312,9 @@ struct WaControl
     bool mouse_to_self = true;
     bool mouse_to_children = true;
     
+    WaControlAPI type_info;
+    std::vector<uint64_t> children;
+    
     // returns true if the event has been "consumed"
     bool feed_event(WaUI * ui, WaEvent event, Vec2 pos_offset);
     void fit_rect(WaUI * ui, Rect2 rect);
@@ -325,11 +328,6 @@ struct WaControl
     void reflow(WaUI * ui);
     void render(WaUI * ui, WaRenderAPI * api);
     Vec2 get_min_size(WaUI * ui);
-    
-    WaControlAPI type_info;
-    
-protected:
-    std::vector<uint64_t> children;
 };
 
 struct WaUI
@@ -376,8 +374,8 @@ struct WaUI
     float string_get_height(const char * string);
     float string_get_width(const char * string);
     
-    void render_string(WaRenderAPI * api, float x, float y, const char * string);
-    void render_ascii_char(WaRenderAPI * api, float x, float y, uint8_t c);
+    void render_string(WaRenderAPI * api, float x, float y, const char * string, Color color);
+    void render_ascii_char(WaRenderAPI * api, float x, float y, uint8_t c, Color color);
     void render_ninepatch(WaRenderAPI * api, uint64_t texture, Rect2 dest, Rect2 src_outer, Rect2 src_inner, Vec2 texture_size, Color color);
     
 protected:
@@ -465,7 +463,7 @@ struct WaButton : public WaControlAPIBasis
         
         auto pad = (available_size - string_size) / 2 + control->padding.a;
         
-        ui->render_string(api, pad.x, pad.y, str);
+        ui->render_string(api, pad.x, pad.y, str, control->modulate);
     }
     static Vec2 get_min_size(WaControl * control, WaUI * ui)
     {
@@ -490,7 +488,21 @@ struct WaList : public WaControlAPIBasis
     }
     static bool reflow(WaControl * control, WaUI * ui)
     {
-        return false;
+        auto padded_rect = Rect2{{0, 0}, control->rect.size};
+        padded_rect.pos += control->padding.a;
+        padded_rect.size -= control->padding.a + control->padding.b;
+        
+        for (auto child_id : control->children)
+        {
+            auto control = ui->get_control(child_id);
+            control->fit_rect(ui, padded_rect);
+            control->reflow(ui);
+            
+            padded_rect.pos.y += control->rect.size.y;
+            padded_rect.size.y -= control->rect.size.y;
+        }
+        
+        return true;
     }
     static void render(WaControl * control, WaUI * ui, WaRenderAPI * api) {}
     static Vec2 get_min_size(WaControl * control, WaUI * ui) // FIXME iterate over children?
@@ -583,6 +595,7 @@ void WaControl::reflow(WaUI * ui)
     auto did_reflow = false;
     if (type_info.reflow)
         did_reflow = type_info.reflow(this, ui);
+    
     if (!did_reflow)
     {
         auto padded_rect = Rect2{{0, 0}, rect.size};
@@ -862,6 +875,7 @@ void WaUI::init(WaRenderAPI * api)
     free(font_data);
     
     control_type_add_basis<WaButton>("Button");
+    control_type_add_basis<WaList>("List");
 };
 void WaUI::clean_up(WaRenderAPI * api)
 {
@@ -886,16 +900,16 @@ float WaUI::string_get_width(const char * string)
     }
     return n * 7;
 }
-void WaUI::render_string(WaRenderAPI * api, float x, float y, const char * string)
+void WaUI::render_string(WaRenderAPI * api, float x, float y, const char * string, Color color)
 {
     while (*string != 0)
     {
-        render_ascii_char(api, x, y, *string);
+        render_ascii_char(api, x, y, *string, color);
         string += 1;
         x += 7;
     }
 }
-void WaUI::render_ascii_char(WaRenderAPI * api, float x, float y, uint8_t c)
+void WaUI::render_ascii_char(WaRenderAPI * api, float x, float y, uint8_t c, Color color)
 {
     x += rect_offset.x;
     y += rect_offset.y;
@@ -909,7 +923,7 @@ void WaUI::render_ascii_char(WaRenderAPI * api, float x, float y, uint8_t c)
     float c_y = (c / 32) * 13;
     api->draw_texture_rect(userdata,
         x, y, 7, 13,
-        255, 255, 255, 255,
+        color.r, color.g, color.b, color.a,
         font_texture, c_x, c_y, 7, 13,
         font_image_width, font_image_height
     );
@@ -1138,22 +1152,20 @@ int main()
     
     ui.get_control(ui.root_control_id)->anchor = {{0.1, 0.1}, {0.9, 0.9}};
     
-    auto button_type_id = ui.control_type_get("Button");
-    auto c_id = ui.control_create(button_type_id);
-    ui.control_add_child(ui.root_control_id, c_id);
+    auto list_type_id = ui.control_type_get("List");
+    auto list_id = ui.control_create(list_type_id);
+    ui.control_add_child(ui.root_control_id, list_id);
     
-    auto control = ui.get_control(c_id);
-    if (control)
-    {
-        control->rect.pos = {4, 52};
-        control->rect.size = {48, 32};
-        control->bg_color = Color{64, 128, 192, 255};
-        printf("%f %f\n", control->rect.pos.x, control->rect.pos.y);
-    }
-    else
-    {
-        printf("AAIAWE???\n");
-    }
+    ui.get_control(list_id)->anchor = {{0.1, 0.1}, {0.9, 0.9}};
+    
+    auto button_type_id = ui.control_type_get("Button");
+    auto button_1_id = ui.control_create(button_type_id);
+    auto button_2_id = ui.control_create(button_type_id);
+    ui.control_add_child(list_id, button_1_id);
+    ui.control_add_child(list_id, button_2_id);
+    
+    ui.get_control(button_1_id)->bg_color = Color{64, 128, 192, 255};
+    ui.get_control(button_2_id)->modulate = Color::BLACK;
     
     
     uint64_t time = SDL_GetTicks64();
