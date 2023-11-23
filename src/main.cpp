@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <cmath>
 #include <vector>
+#include <string>
 #include <unordered_map>
 #include <memory>
 #include <algorithm>
@@ -142,6 +143,31 @@ struct Rect2
     }
 };
 
+struct Vec2x2
+{
+    Vec2 pos;
+    Vec2 end;
+    Vec2 get_size() const
+    {
+        return end  - pos;
+    }
+    void set_size(Vec2 size)
+    {
+        end = pos + size;
+    }
+    Vec2x2 round() const
+    {
+        auto ret = *this;
+        ret.end = end.round();
+        ret.pos = pos.round();
+        return ret;
+    }
+    bool contains_point(Vec2 point)
+    {
+        return point.x >= pos.x && point.x <= end.x && point.y >= pos.y && point.y <= end.y;
+    }
+};
+
 struct WaRenderAPI
 {
     WaRenderAPI()
@@ -221,24 +247,50 @@ struct WaUI;
 struct WaControl;
 struct WaControlAPI;
 
+struct WaButton;
+
 struct WaControlAPI
 {
     WaControlAPI()
     {
+        data = nullptr;
+        init = nullptr;
+        destruct = nullptr;
+        
         think = nullptr;
         handle_event = nullptr;
         reflow = nullptr;
         render = nullptr;
+        get_min_size = nullptr;
     }
     
+    void * data;
+    void (*init)(WaControl * control);
+    void (*destruct)(WaControl * control);
+    
     void (*think)(WaControl * control, WaUI * ui, uint64_t delta);
-    void (*handle_event)(WaControl * control, WaUI * ui, uint64_t delta);
-    void (*reflow)(WaControl * control, WaUI * ui, uint64_t delta);
+    bool (*handle_event)(WaControl * control, WaUI * ui, WaEvent event, Vec2 pos_offset);
+    void (*reflow)(WaControl * control, WaUI * ui);
     void (*render)(WaControl * control, WaUI * ui, WaRenderAPI * api);
+    Vec2 (*get_min_size)(WaControl * control, WaUI * ui);
+};
+
+// helper just to make building control subtypes cleaner; not architecturally necessary
+struct WaControlAPIBasis
+{
+    static void init(WaControl * control);
+    static void destruct(WaControl * control);
+    static void think(WaControl * control, WaUI * ui, uint64_t delta);
+    static bool handle_event(WaControl * control, WaUI * ui, WaEvent event, Vec2 pos_offset);
+    static void reflow(WaControl * control, WaUI * ui);
+    static void render(WaControl * control, WaUI * ui, WaRenderAPI * api);
+    static Vec2 get_min_size(WaControl * control, WaUI * ui);
 };
 
 struct WaControl
 {
+    friend WaUI;
+    
     Rect2 rect;
     Rect2 anchor = {{0.1, 0.1}, {0.9, 0.9}};
     
@@ -247,29 +299,35 @@ struct WaControl
     Color bg_color = Color::WHITE;
     Color modulate = Color::WHITE;
     
+    uint64_t type_id = 0;
+    
     uint64_t id = 0;
     uint64_t parent_id = 0;
-    
-    std::vector<uint64_t> children;
     
     bool visible = true;
     bool draw_bg = true;
     bool mouse_to_self = true;
     bool mouse_to_children = true;
     
-    // returns whether the event has been "consumed"
+    // returns true if the event has been "consumed"
     bool feed_event(WaUI * ui, WaEvent event, Vec2 pos_offset);
-    
     void fit_rect(Rect2 rect);
     ptrdiff_t find_child(uint64_t id);
     
-    // returns whether the event has been "consumed"
-    void think(WaUI * ui, uint64_t delta) {}
+    // methods with callbacks:
+    
+    // returns true if the event has been "consumed"
+    void think(WaUI * ui, uint64_t delta);
     bool handle_event(WaUI * ui, WaEvent event, Vec2 pos_offset);
     void reflow(WaUI * ui);
     void render(WaUI * ui, WaRenderAPI * api);
+    Vec2 get_min_size(WaUI * ui);
     
-    WaControlAPI * callbacks = nullptr;
+protected:
+    std::vector<uint64_t> children;
+    
+    void * type_data = nullptr;
+    WaControlAPI type_callbacks;
 };
 
 struct WaUI
@@ -289,7 +347,17 @@ struct WaUI
     void think(uint64_t delta);
     void feed_event(WaEvent event);
     
-    uint64_t control_create();
+    uint64_t control_type_add(const char * name, WaControlAPI api);
+    
+    // Returns 0 if the type does not exist.
+    uint64_t control_type_get(const char * name);
+    // The callee does not own the returned pointer and is not allowed to hold onto it.
+    // It must be copied into a new buffer before calling any other UI functions.
+    // Returns null if the type does not exist.
+    const char * control_type_get_name(uint64_t type_id);
+    
+    uint64_t control_create(uint64_t type_id);
+    uint64_t control_create_untyped();
     void control_destroy(uint64_t id);
     void control_add_child(uint64_t parent_id, uint64_t child_id);
     void control_remove_child(uint64_t parent_id, uint64_t child_id);
@@ -302,6 +370,10 @@ struct WaUI
     
     bool px_snapped_rendering = true;
     
+    void render_string(WaRenderAPI * api, float x, float y, const char * string);
+    void render_ascii_char(WaRenderAPI * api, float x, float y, uint8_t c);
+    void render_ninepatch(WaRenderAPI * api, uint64_t texture, Rect2 dest, Rect2 src_outer, Rect2 src_inner, Vec2 texture_size, Color color);
+    
 protected:
     uint64_t clicked_control = 0;
     uint64_t clicked_control_count = 0;
@@ -310,6 +382,9 @@ protected:
     uint64_t font_texture = 0;
     
 private:
+    template<typename T>
+    uint64_t control_type_add_basis(const char * name);
+    
     bool layout_dirty = true;
     
     Vec2 size = {800, 600};
@@ -317,18 +392,71 @@ private:
     std::vector<int> font_advance;
     std::vector<int> font_offset;
     
-    Vec2 draw_offset;
+    Vec2 rect_offset;
+    
+    uint64_t next_type_id = 1;
+    std::unordered_map<uint64_t, WaControlAPI> control_types;
+    std::unordered_map<uint64_t, std::string> control_type_names;
+    std::unordered_map<std::string, uint64_t> control_type_ids;
     
     uint64_t next_id = 1;
     std::unordered_map<uint64_t, std::shared_ptr<WaControl>> controls;
     
-    void render_string(WaRenderAPI * api, float x, float y, const char * string);
-    void render_ascii_char(WaRenderAPI * api, float x, float y, uint8_t c);
     void render_control(WaRenderAPI * api, uint64_t id);
-    
-    void render_ninepatch(WaRenderAPI * api, uint64_t texture, Rect2 dest, Rect2 src_outer, Rect2 src_inner, Vec2 texture_size, Color color);
 };
 
+struct WaButton: public WaControlAPIBasis
+{
+    static void init(WaControl * control)
+    {
+        
+    }
+    static void destruct(WaControl * control)
+    {
+        
+    }
+    static void think(WaControl * control, WaUI * ui, uint64_t delta)
+    {
+        
+    }
+    static bool handle_event(WaControl * control, WaUI * ui, WaEvent event, Vec2 pos_offset)
+    {
+        if (event.type == WaEvent::MOUSE_BUTTON_PRESSED)
+        {
+            printf("Press detected on BUTTON %lld\n", control->id);
+            return true;
+        }
+        if (event.type == WaEvent::MOUSE_BUTTON_RELEASED)
+        {
+            printf("Release detected on BUTTON %lld\n", control->id);
+            return true;
+        }
+        return false;
+    }
+    static void reflow(WaControl * control, WaUI * ui)
+    {
+        
+    }
+    static void render(WaControl * control, WaUI * ui, WaRenderAPI * api)
+    {
+        ui->render_string(api, 0, 0, "i am button");
+    }
+    static Vec2 get_min_size(WaControl * control, WaUI * ui)
+    {
+        return Vec2{50, 20};
+    }
+};
+
+void WaControl::think(WaUI * ui, uint64_t delta)
+{
+    for (auto child_id : children)
+    {
+        auto control = ui->get_control(child_id);
+        control->think(ui, delta);
+    }
+    if (type_callbacks.think)
+        type_callbacks.think(this, ui, delta);
+}
 bool WaControl::feed_event(WaUI * ui, WaEvent event, Vec2 pos_offset)
 {
     if (!visible)
@@ -344,34 +472,41 @@ bool WaControl::feed_event(WaUI * ui, WaEvent event, Vec2 pos_offset)
 }
 bool WaControl::handle_event(WaUI * ui, WaEvent event, Vec2 pos_offset)
 {
-    auto global_rect = rect;
-    global_rect.pos += pos_offset;
-    if (event.type == WaEvent::MOUSE_BUTTON_PRESSED)
+    auto ret = [&]()
     {
-        if (!global_rect.contains_point({event.x, event.y}))
-            return false;
-        printf("Press detected on control %lld\n", id);
-        ui->clicked_control_count += 1;
-        ui->clicked_control = id;
-        return true;
-    }
-    if (event.type == WaEvent::MOUSE_BUTTON_RELEASED)
-    {
-        if (!global_rect.contains_point({event.x, event.y}))
+        auto global_rect = rect;
+        global_rect.pos += pos_offset;
+        if (event.type == WaEvent::MOUSE_BUTTON_PRESSED)
         {
-            if (ui->clicked_control == id)
-            {
-                printf("release detected off of control %lld\n", id);
-                return true;
-            }
-            else
+            if (!global_rect.contains_point({event.x, event.y}))
                 return false;
+            //printf("Press detected on control %lld\n", id);
+            ui->clicked_control_count += 1;
+            ui->clicked_control = id;
+            return true;
         }
-        printf("release detected on control %lld\n", id);
-        return true;
-    }
+        if (event.type == WaEvent::MOUSE_BUTTON_RELEASED)
+        {
+            if (!global_rect.contains_point({event.x, event.y}))
+            {
+                if (ui->clicked_control == id)
+                {
+                    //printf("release detected off of control %lld\n", id);
+                    return true;
+                }
+                else
+                    return false;
+            }
+            //printf("release detected on control %lld\n", id);
+            return true;
+        }
+        
+        return false;
+    }();
+    if (type_callbacks.handle_event)
+        ret |= type_callbacks.handle_event(this, ui, event, pos_offset);
     
-    return false;
+    return ret;
 }
 
 ptrdiff_t WaControl::find_child(uint64_t id)
@@ -386,21 +521,33 @@ ptrdiff_t WaControl::find_child(uint64_t id)
 
 void WaControl::reflow(WaUI * ui)
 {
-    for (auto child_id : children)
+    if (type_callbacks.reflow)
+        type_callbacks.reflow(this, ui);
+    else
     {
-        auto control = ui->get_control(child_id);
-        control->fit_rect({{0, 0}, rect.size});
-        control->reflow(ui);
+        for (auto child_id : children)
+        {
+            auto control = ui->get_control(child_id);
+            control->fit_rect({{0, 0}, rect.size});
+            control->reflow(ui);
+        }
     }
 }
 
 void WaControl::render(WaUI * ui, WaRenderAPI * api)
 {
-    Vec2 pos = {0, 0};
-    Vec2 size = rect.size;
-    
     if (draw_bg)
-        ui->render_ninepatch(api, ui->test_texture, {pos, size}, {{0, 0}, {8, 8}}, {{4, 4}, {0, 0}}, {test_image_width, test_image_height}, bg_color);
+        ui->render_ninepatch(api, ui->test_texture, {{0, 0}, rect.size}, {{0, 0}, {8, 8}}, {{4, 4}, {0, 0}}, {test_image_width, test_image_height}, bg_color);
+    
+    if (type_callbacks.render)
+        type_callbacks.render(this, ui, api);
+}
+
+Vec2 WaControl::get_min_size(WaUI * ui)
+{
+    if (type_callbacks.get_min_size)
+        return type_callbacks.get_min_size(this, ui);
+    return min_size;
 }
 
 void WaControl::fit_rect(Rect2 parent_rect)
@@ -411,7 +558,7 @@ void WaControl::fit_rect(Rect2 parent_rect)
 
 WaUI::WaUI()
 {
-    root_control_id = control_create();
+    root_control_id = control_create_untyped();
 }
 void WaUI::feed_event(WaEvent event)
 {
@@ -444,7 +591,7 @@ void WaUI::feed_event(WaEvent event)
             clicked_control_count -= 1;
             if (clicked_control_count == 0)
             {
-                printf("reset clicked control... was %lld\n", clicked_control);
+                //printf("reset clicked control... was %lld\n", clicked_control);
                 clicked_control = 0;
             }
         }
@@ -454,7 +601,21 @@ void WaUI::feed_event(WaEvent event)
         controls[root_control_id]->feed_event(this, event, {0, 0});
     }
 }
-uint64_t WaUI::control_create()
+uint64_t WaUI::control_create(uint64_t type_id)
+{
+    auto id = control_create_untyped();
+    auto control = controls[id];
+    
+    if (control_types.count(type_id) > 0)
+        control->type_callbacks = control_types[type_id];
+    if (control->type_callbacks.init)
+        control->type_callbacks.init(&*control);
+    
+    control->type_id = type_id;
+    
+    return id;
+}
+uint64_t WaUI::control_create_untyped()
 {
     auto id = next_id;
     next_id += 1;
@@ -558,12 +719,52 @@ void WaUI::render_scene(WaRenderAPI * api)
 {
     api->draw_begin_frame(userdata);
     
-    draw_offset = {0, 0};
+    rect_offset = {0, 0};
     render_control(api, root_control_id);
     
     //render_string(api, 100, 100, "Drawing random text to the screen!!!");
     
     api->draw_finish_frame(userdata);
+}
+
+uint64_t WaUI::control_type_add(const char * name, WaControlAPI api)
+{
+    auto type_id = next_type_id;
+    next_type_id += 1;
+    
+    std::string strname(name);
+    control_types.insert({type_id, api});
+    control_type_names.insert({type_id, strname});
+    control_type_ids.insert({strname, type_id});
+    
+    return type_id;
+}
+template<typename T>
+uint64_t WaUI::control_type_add_basis(const char * name)
+{
+    WaControlAPI api;
+    api.init = T::init;
+    api.destruct = T::destruct;
+    api.think = T::think;
+    api.handle_event = T::handle_event;
+    api.reflow = T::reflow;
+    api.render = T::render;
+    api.get_min_size = T::get_min_size;
+    
+    return control_type_add(name, api);
+}
+uint64_t WaUI::control_type_get(const char * name)
+{
+    std::string strname(name);
+    if (control_type_ids.count(strname) > 0)
+        return control_type_ids[strname];
+    return 0;
+}
+const char * WaUI::control_type_get_name(uint64_t type_id)
+{
+    if (control_type_names.count(type_id) > 0)
+        return control_type_names[type_id].data();
+    return nullptr;
 }
 
 void WaUI::init(WaRenderAPI * api)
@@ -591,8 +792,9 @@ void WaUI::init(WaRenderAPI * api)
         }
     }
     font_texture = api->texture_create(userdata, font_image_width, font_image_height, font_data);
-    
     free(font_data);
+    
+    control_type_add_basis<WaButton>("Button");
 };
 void WaUI::clean_up(WaRenderAPI * api)
 {
@@ -612,6 +814,8 @@ void WaUI::render_string(WaRenderAPI * api, float x, float y, const char * strin
 }
 void WaUI::render_ascii_char(WaRenderAPI * api, float x, float y, uint8_t c)
 {
+    x += rect_offset.x;
+    y += rect_offset.y;
     float c_x = (c % 32) * 7;
     float c_y = (c / 32) * 13;
     api->draw_texture_rect(userdata,
@@ -632,10 +836,10 @@ void WaUI::render_control(WaRenderAPI * api, uint64_t id)
     if (!control->visible)
         return;
     
-    auto pos = control->rect.pos + draw_offset;
-    auto prev_draw_offset = draw_offset;
+    auto pos = control->rect.pos + rect_offset;
+    auto prev_rect_offset = rect_offset;
     
-    draw_offset = pos;
+    rect_offset = pos;
     
     control->render(this, api);
     //printf("rendering %d (%f %f %f %f)\n", id, pos.x, pos.y, size.x, size.y);
@@ -645,12 +849,12 @@ void WaUI::render_control(WaRenderAPI * api, uint64_t id)
         render_control(api, child_id);
     }
     
-    draw_offset = prev_draw_offset;
+    rect_offset = prev_rect_offset;
 };
 
 void WaUI::render_ninepatch(WaRenderAPI * api, uint64_t texture, Rect2 dest, Rect2 src_outer, Rect2 src_inner, Vec2 texture_size, Color color)
 {
-    dest.pos += draw_offset;
+    dest.pos += rect_offset;
     
     if (px_snapped_rendering)
         dest = dest.round();
@@ -746,22 +950,6 @@ int main()
     
     auto ui = WaUI();
     
-    auto c_id = ui.control_create();
-    ui.control_add_child(ui.root_control_id, c_id);
-    
-    auto control = ui.get_control(c_id);
-    if (control)
-    {
-        control->rect.pos = {4, 52};
-        control->rect.size = {48, 32};
-        control->bg_color = Color::RED;
-        printf("%f %f\n", control->rect.pos.x, control->rect.pos.y);
-    }
-    else
-    {
-        printf("AAIAWE???\n");
-    }
-    
     auto context = CallbackContext();
     context.renderer = renderer;
     
@@ -855,6 +1043,24 @@ int main()
     api.texture_destroy = sdl_texture_destroy;
     
     ui.init(&api);
+    
+    auto button_type_id = ui.control_type_get("Button");
+    auto c_id = ui.control_create(button_type_id);
+    ui.control_add_child(ui.root_control_id, c_id);
+    
+    auto control = ui.get_control(c_id);
+    if (control)
+    {
+        control->rect.pos = {4, 52};
+        control->rect.size = {48, 32};
+        control->bg_color = Color::RED;
+        printf("%f %f\n", control->rect.pos.x, control->rect.pos.y);
+    }
+    else
+    {
+        printf("AAIAWE???\n");
+    }
+    
     
     uint64_t time = SDL_GetTicks64();
     
