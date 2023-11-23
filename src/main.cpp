@@ -191,7 +191,7 @@ struct WaRenderAPI
         uint32_t tex_size_w, uint32_t tex_size_h);
     
     // The given image data does not become owned by your application; you must copy it.
-    uint64_t (*texture_create)(void * userdata, uint32_t w, uint32_t h, const unsigned char * data);
+    uint64_t (*texture_create)(void * userdata, uint32_t w, uint32_t h, bool filter, const unsigned char * data);
     
     void (*texture_destroy)(void * userdata, uint32_t texture_id);
 };
@@ -769,7 +769,7 @@ const char * WaUI::control_type_get_name(uint64_t type_id)
 
 void WaUI::init(WaRenderAPI * api)
 {
-    test_texture = api->texture_create(userdata, test_image_width, test_image_height, test_image);
+    test_texture = api->texture_create(userdata, test_image_width, test_image_height, true, test_image);
     
     auto font_data = (unsigned char *)malloc(font_image_width * font_image_height * 4);
     auto i = 0;
@@ -791,7 +791,7 @@ void WaUI::init(WaRenderAPI * api)
             }
         }
     }
-    font_texture = api->texture_create(userdata, font_image_width, font_image_height, font_data);
+    font_texture = api->texture_create(userdata, font_image_width, font_image_height, true, font_data);
     free(font_data);
     
     control_type_add_basis<WaButton>("Button");
@@ -816,6 +816,12 @@ void WaUI::render_ascii_char(WaRenderAPI * api, float x, float y, uint8_t c)
 {
     x += rect_offset.x;
     y += rect_offset.y;
+    if (px_snapped_rendering)
+    {
+        x = round(x);
+        y = round(y);
+    }
+    
     float c_x = (c % 32) * 7;
     float c_y = (c / 32) * 13;
     api->draw_texture_rect(userdata,
@@ -946,8 +952,6 @@ int main()
     if (!renderer)
         return fprintf(stderr, "failed to open SDL renderer"), -1;
     
-    SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "1");
-    
     auto ui = WaUI();
     
     auto context = CallbackContext();
@@ -1010,11 +1014,16 @@ int main()
 #endif // else of #if !USE_GEOMETRY_FOR_NINEPATCH
     };
     
-    auto sdl_texture_create = [](void * userdata, uint32_t w, uint32_t h, const unsigned char * data)
+    auto sdl_texture_create = [](void * userdata, uint32_t w, uint32_t h, bool filter, const unsigned char * data)
     {
         auto context = (CallbackContext *) userdata;
         auto renderer = context->renderer;
         auto & textures = context->textures;
+        
+        if (filter)
+            SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "1");
+        else
+            SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "0");
         
         auto texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGBA32, SDL_TEXTUREACCESS_STATIC, w, h);
         auto texture_id = context->next_id;
