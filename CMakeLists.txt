@@ -5,8 +5,8 @@ project(waui_demo)
 find_package(SDL2 REQUIRED)
 include_directories(${SDL2_INCLUDE_DIRS})
 
+set(CMAKE_BUILD_TYPE RelWithDebInfo)
 set(CMAKE_CXX_STANDARD 17)
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O3")
 set(CMAKE_EXE_LINKER_FLAGS "-static-libgcc -static-libstdc++ -static")
 
 if (MSVC)

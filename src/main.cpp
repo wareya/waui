@@ -153,26 +153,14 @@ struct Rect2
 
 struct Vec2x2
 {
-    Vec2 pos;
-    Vec2 end;
-    Vec2 get_size() const
-    {
-        return end  - pos;
-    }
-    void set_size(Vec2 size)
-    {
-        end = pos + size;
-    }
+    Vec2 a;
+    Vec2 b;
     Vec2x2 round() const
     {
         auto ret = *this;
-        ret.end = end.round();
-        ret.pos = pos.round();
+        ret.a = a.round();
+        ret.b = b.round();
         return ret;
-    }
-    bool contains_point(Vec2 point)
-    {
-        return point.x >= pos.x && point.x <= end.x && point.y >= pos.y && point.y <= end.y;
     }
 };
 
@@ -280,19 +268,21 @@ struct WaControlAPI
     
     void (*think)(WaControl * control, WaUI * ui, uint64_t delta);
     bool (*handle_event)(WaControl * control, WaUI * ui, WaEvent event, Vec2 pos_offset);
-    void (*reflow)(WaControl * control, WaUI * ui);
+    // returns whether the control handles reflowing at all
+    // (return false if you want default reflow to happen)
+    bool (*reflow)(WaControl * control, WaUI * ui);
     void (*render)(WaControl * control, WaUI * ui, WaRenderAPI * api);
     Vec2 (*get_min_size)(WaControl * control, WaUI * ui);
 };
 
-// helper just to make building control subtypes cleaner; not architecturally necessary
+// helper just to make building control subtypes cleaner / harder to mess up; not architecturally necessary
 struct WaControlAPIBasis
 {
     static void init(WaControl * control);
     static void destruct(WaControl * control);
     static void think(WaControl * control, WaUI * ui, uint64_t delta);
     static bool handle_event(WaControl * control, WaUI * ui, WaEvent event, Vec2 pos_offset);
-    static void reflow(WaControl * control, WaUI * ui);
+    static bool reflow(WaControl * control, WaUI * ui);
     static void render(WaControl * control, WaUI * ui, WaRenderAPI * api);
     static Vec2 get_min_size(WaControl * control, WaUI * ui);
 };
@@ -336,11 +326,10 @@ struct WaControl
     void render(WaUI * ui, WaRenderAPI * api);
     Vec2 get_min_size(WaUI * ui);
     
+    WaControlAPI type_info;
+    
 protected:
     std::vector<uint64_t> children;
-    
-    void * type_data = nullptr;
-    WaControlAPI type_callbacks;
 };
 
 struct WaUI
@@ -423,15 +412,23 @@ private:
     void render_control(WaRenderAPI * api, uint64_t id);
 };
 
-struct WaButton: public WaControlAPIBasis
+struct WaButton : public WaControlAPIBasis
 {
+    struct WaButtonData
+    {
+        std::string label;
+    };
     static void init(WaControl * control)
     {
-        
+        control->type_info.data = (void *) new WaButtonData();
+        auto data = (WaButtonData *) control->type_info.data;
+        data->label = "no YOU are a button";
     }
     static void destruct(WaControl * control)
     {
-        
+        if (control->type_info.data)
+            delete (WaButtonData *) control->type_info.data;
+        control->type_info.data = nullptr;
     }
     static void think(WaControl * control, WaUI * ui, uint64_t delta)
     {
@@ -451,32 +448,54 @@ struct WaButton: public WaControlAPIBasis
         }
         return false;
     }
-    static void reflow(WaControl * control, WaUI * ui)
+    static bool reflow(WaControl * control, WaUI * ui)
     {
-        
+        return false;
     }
     static void render(WaControl * control, WaUI * ui, WaRenderAPI * api)
     {
-        auto str = "i am button";
+        auto data = (WaButtonData *) control->type_info.data;
+        auto str = data->label.data();
         
         auto available_size = control->rect.size;
-        available_size -= control->padding.pos;
-        available_size -= control->padding.end;
+        available_size -= control->padding.a;
+        available_size -= control->padding.b;
         
         auto string_size = Vec2{ui->string_get_width(str), ui->string_get_height(str)};
         
-        auto pad = (available_size - string_size) / 2 + control->padding.pos;
+        auto pad = (available_size - string_size) / 2 + control->padding.a;
         
         ui->render_string(api, pad.x, pad.y, str);
     }
     static Vec2 get_min_size(WaControl * control, WaUI * ui)
     {
-        auto str = "i am button";
+        auto data = (WaButtonData *) control->type_info.data;
+        auto str = data->label.data();
         
         auto string_size = Vec2{ui->string_get_width(str), ui->string_get_height(str)};
-        string_size += control->padding.pos;
-        string_size += control->padding.end;
+        string_size += control->padding.a;
+        string_size += control->padding.b;
         return string_size;// + Vec2{5, 5};
+    }
+};
+
+struct WaList : public WaControlAPIBasis
+{
+    static void init(WaControl * control) {}
+    static void destruct(WaControl * control) {}
+    static void think(WaControl * control, WaUI * ui, uint64_t delta) {}
+    static bool handle_event(WaControl * control, WaUI * ui, WaEvent event, Vec2 pos_offset)
+    {
+        return false;
+    }
+    static bool reflow(WaControl * control, WaUI * ui)
+    {
+        return false;
+    }
+    static void render(WaControl * control, WaUI * ui, WaRenderAPI * api) {}
+    static Vec2 get_min_size(WaControl * control, WaUI * ui) // FIXME iterate over children?
+    {
+        return {0, 0};
     }
 };
 
@@ -487,8 +506,8 @@ void WaControl::think(WaUI * ui, uint64_t delta)
         auto control = ui->get_control(child_id);
         control->think(ui, delta);
     }
-    if (type_callbacks.think)
-        type_callbacks.think(this, ui, delta);
+    if (type_info.think)
+        type_info.think(this, ui, delta);
 }
 bool WaControl::feed_event(WaUI * ui, WaEvent event, Vec2 pos_offset)
 {
@@ -505,6 +524,7 @@ bool WaControl::feed_event(WaUI * ui, WaEvent event, Vec2 pos_offset)
 }
 bool WaControl::handle_event(WaUI * ui, WaEvent event, Vec2 pos_offset)
 {
+    auto may_handle = true;
     auto ret = [&]()
     {
         auto global_rect = rect;
@@ -512,7 +532,10 @@ bool WaControl::handle_event(WaUI * ui, WaEvent event, Vec2 pos_offset)
         if (event.type == WaEvent::MOUSE_BUTTON_PRESSED)
         {
             if (!global_rect.contains_point({event.x, event.y}))
+            {
+                may_handle = false;
                 return false;
+            }
             //printf("Press detected on control %lld\n", id);
             ui->clicked_control_count += 1;
             ui->clicked_control = id;
@@ -520,6 +543,9 @@ bool WaControl::handle_event(WaUI * ui, WaEvent event, Vec2 pos_offset)
         }
         if (event.type == WaEvent::MOUSE_BUTTON_RELEASED)
         {
+            may_handle = ui->clicked_control == id;
+            // return may_handle; // FIXME: might fix a bug but haven't found the bug yet
+            
             if (!global_rect.contains_point({event.x, event.y}))
             {
                 if (ui->clicked_control == id)
@@ -536,8 +562,8 @@ bool WaControl::handle_event(WaUI * ui, WaEvent event, Vec2 pos_offset)
         
         return false;
     }();
-    if (type_callbacks.handle_event)
-        ret |= type_callbacks.handle_event(this, ui, event, pos_offset);
+    if (may_handle and type_info.handle_event)
+        ret |= type_info.handle_event(this, ui, event, pos_offset);
     
     return ret;
 }
@@ -554,14 +580,19 @@ ptrdiff_t WaControl::find_child(uint64_t id)
 
 void WaControl::reflow(WaUI * ui)
 {
-    if (type_callbacks.reflow)
-        type_callbacks.reflow(this, ui);
-    else
+    auto did_reflow = false;
+    if (type_info.reflow)
+        did_reflow = type_info.reflow(this, ui);
+    if (!did_reflow)
     {
+        auto padded_rect = Rect2{{0, 0}, rect.size};
+        padded_rect.pos += padding.a;
+        padded_rect.size -= padding.a + padding.b;
+        
         for (auto child_id : children)
         {
             auto control = ui->get_control(child_id);
-            control->fit_rect(ui, {{0, 0}, rect.size});
+            control->fit_rect(ui, padded_rect);
             control->reflow(ui);
         }
     }
@@ -572,22 +603,20 @@ void WaControl::render(WaUI * ui, WaRenderAPI * api)
     if (draw_bg)
         ui->render_ninepatch(api, ui->panel_texture, {{0, 0}, rect.size}, {{0, 0}, {16, 16}}, {{3.5, 3.5}, {9, 9}}, {panel_image_width, panel_image_height}, bg_color);
     
-    if (type_callbacks.render)
-        type_callbacks.render(this, ui, api);
+    if (type_info.render)
+        type_info.render(this, ui, api);
 }
 
 Vec2 WaControl::get_min_size(WaUI * ui)
 {
     auto ret = min_size;
-    if (type_callbacks.get_min_size)
-        ret = ret.max(type_callbacks.get_min_size(this, ui));
+    if (type_info.get_min_size)
+        ret = ret.max(type_info.get_min_size(this, ui));
     return ret;
 }
 
 void WaControl::fit_rect(WaUI * ui, Rect2 parent_rect)
 {
-    parent_rect.pos += padding.pos;
-    parent_rect.size -= padding.end + padding.pos;
     rect.pos = parent_rect.pos.lerp(parent_rect.size, anchor.pos);
     rect.set_end(parent_rect.pos.lerp(parent_rect.size, anchor.size));
     rect.size = rect.size.max(get_min_size(ui));
@@ -643,12 +672,12 @@ uint64_t WaUI::control_create(uint64_t type_id)
     auto id = control_create_untyped();
     auto control = controls[id];
     
-    if (control_types.count(type_id) > 0)
-        control->type_callbacks = control_types[type_id];
-    if (control->type_callbacks.init)
-        control->type_callbacks.init(&*control);
-    
     control->type_id = type_id;
+    
+    if (control_types.count(type_id) > 0)
+        control->type_info = control_types[type_id];
+    if (control->type_info.init)
+        control->type_info.init(&*control);
     
     return id;
 }
