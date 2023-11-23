@@ -106,6 +106,14 @@ struct Vec2
             lerp(y, other.y, t.y)
         };
     }
+    
+    Vec2 max(const Vec2& other) const
+    {
+        return Vec2 {
+            std::max(x, other.x),
+            std::max(y, other.y)
+        };
+    }
     Vec2 lerp(const Vec2& other, float t) const { return lerp(other, {t, t}); }
     Vec2 round() const { return {roundf(x), roundf(y)}; };
     
@@ -191,6 +199,8 @@ struct WaRenderAPI
         uint32_t tex_size_w, uint32_t tex_size_h);
     
     // The given image data does not become owned by your application; you must copy it.
+    // The texture data is stored one pixel at a time (not a planar format), 8 bit per channel RGBA, and exactly (w * h * 4) bytes long.
+    // Pixels are stored in row-major order, starting in the top left.
     uint64_t (*texture_create)(void * userdata, uint32_t w, uint32_t h, bool filter, const unsigned char * data);
     
     void (*texture_destroy)(void * userdata, uint32_t texture_id);
@@ -292,7 +302,10 @@ struct WaControl
     friend WaUI;
     
     Rect2 rect;
-    Rect2 anchor = {{0.1, 0.1}, {0.9, 0.9}};
+    Rect2 anchor = {{0.0, 0.0}, {0.0, 0.0}};
+    
+    Vec2x2 padding = {{2, 2}, {2, 2}};
+    Vec2x2 margin = {{0, 0}, {0, 0}};
     
     Vec2 min_size;
     
@@ -311,7 +324,7 @@ struct WaControl
     
     // returns true if the event has been "consumed"
     bool feed_event(WaUI * ui, WaEvent event, Vec2 pos_offset);
-    void fit_rect(Rect2 rect);
+    void fit_rect(WaUI * ui, Rect2 rect);
     ptrdiff_t find_child(uint64_t id);
     
     // methods with callbacks:
@@ -351,6 +364,7 @@ struct WaUI
     
     // Returns 0 if the type does not exist.
     uint64_t control_type_get(const char * name);
+    
     // The callee does not own the returned pointer and is not allowed to hold onto it.
     // It must be copied into a new buffer before calling any other UI functions.
     // Returns null if the type does not exist.
@@ -370,6 +384,9 @@ struct WaUI
     
     bool px_snapped_rendering = true;
     
+    float string_get_height(const char * string);
+    float string_get_width(const char * string);
+    
     void render_string(WaRenderAPI * api, float x, float y, const char * string);
     void render_ascii_char(WaRenderAPI * api, float x, float y, uint8_t c);
     void render_ninepatch(WaRenderAPI * api, uint64_t texture, Rect2 dest, Rect2 src_outer, Rect2 src_inner, Vec2 texture_size, Color color);
@@ -379,6 +396,7 @@ protected:
     uint64_t clicked_control_count = 0;
     
     uint64_t test_texture = 0;
+    uint64_t panel_texture = 0;
     uint64_t font_texture = 0;
     
 private:
@@ -439,11 +457,26 @@ struct WaButton: public WaControlAPIBasis
     }
     static void render(WaControl * control, WaUI * ui, WaRenderAPI * api)
     {
-        ui->render_string(api, 0, 0, "i am button");
+        auto str = "i am button";
+        
+        auto available_size = control->rect.size;
+        available_size -= control->padding.pos;
+        available_size -= control->padding.end;
+        
+        auto string_size = Vec2{ui->string_get_width(str), ui->string_get_height(str)};
+        
+        auto pad = (available_size - string_size) / 2 + control->padding.pos;
+        
+        ui->render_string(api, pad.x, pad.y, str);
     }
     static Vec2 get_min_size(WaControl * control, WaUI * ui)
     {
-        return Vec2{50, 20};
+        auto str = "i am button";
+        
+        auto string_size = Vec2{ui->string_get_width(str), ui->string_get_height(str)};
+        string_size += control->padding.pos;
+        string_size += control->padding.end;
+        return string_size;// + Vec2{5, 5};
     }
 };
 
@@ -528,7 +561,7 @@ void WaControl::reflow(WaUI * ui)
         for (auto child_id : children)
         {
             auto control = ui->get_control(child_id);
-            control->fit_rect({{0, 0}, rect.size});
+            control->fit_rect(ui, {{0, 0}, rect.size});
             control->reflow(ui);
         }
     }
@@ -537,7 +570,7 @@ void WaControl::reflow(WaUI * ui)
 void WaControl::render(WaUI * ui, WaRenderAPI * api)
 {
     if (draw_bg)
-        ui->render_ninepatch(api, ui->test_texture, {{0, 0}, rect.size}, {{0, 0}, {8, 8}}, {{4, 4}, {0, 0}}, {test_image_width, test_image_height}, bg_color);
+        ui->render_ninepatch(api, ui->panel_texture, {{0, 0}, rect.size}, {{0, 0}, {16, 16}}, {{3.5, 3.5}, {9, 9}}, {panel_image_width, panel_image_height}, bg_color);
     
     if (type_callbacks.render)
         type_callbacks.render(this, ui, api);
@@ -545,15 +578,19 @@ void WaControl::render(WaUI * ui, WaRenderAPI * api)
 
 Vec2 WaControl::get_min_size(WaUI * ui)
 {
+    auto ret = min_size;
     if (type_callbacks.get_min_size)
-        return type_callbacks.get_min_size(this, ui);
-    return min_size;
+        ret = ret.max(type_callbacks.get_min_size(this, ui));
+    return ret;
 }
 
-void WaControl::fit_rect(Rect2 parent_rect)
+void WaControl::fit_rect(WaUI * ui, Rect2 parent_rect)
 {
+    parent_rect.pos += padding.pos;
+    parent_rect.size -= padding.end + padding.pos;
     rect.pos = parent_rect.pos.lerp(parent_rect.size, anchor.pos);
     rect.set_end(parent_rect.pos.lerp(parent_rect.size, anchor.size));
+    rect.size = rect.size.max(get_min_size(ui));
 }
 
 WaUI::WaUI()
@@ -709,7 +746,7 @@ void WaUI::think(uint64_t delta)
         //auto & control_rect = control->rect;
         
         //printf("resizing %d (via %f %f)\n", root_control_id, control->anchor.size.x, control->anchor.size.y);
-        control->fit_rect({{0, 0}, {size}});
+        control->fit_rect(this, {{0, 0}, {size}});
         control->reflow(this);
         
         layout_dirty = false;
@@ -770,6 +807,7 @@ const char * WaUI::control_type_get_name(uint64_t type_id)
 void WaUI::init(WaRenderAPI * api)
 {
     test_texture = api->texture_create(userdata, test_image_width, test_image_height, true, test_image);
+    panel_texture = api->texture_create(userdata, panel_image_width, panel_image_height, true, panel_image);
     
     auto font_data = (unsigned char *)malloc(font_image_width * font_image_height * 4);
     auto i = 0;
@@ -800,9 +838,25 @@ void WaUI::clean_up(WaRenderAPI * api)
 {
     api->texture_destroy(userdata, test_texture);
     test_texture = 0;
+    api->texture_destroy(userdata, panel_texture);
+    panel_texture = 0;
     api->texture_destroy(userdata, font_texture);
     font_texture = 0;
 };
+float WaUI::string_get_height(const char * string)
+{
+    return 13;
+}
+float WaUI::string_get_width(const char * string)
+{
+    auto n = 0;
+    while (*string != 0)
+    {
+        string += 1;
+        n += 1;
+    }
+    return n * 7;
+}
 void WaUI::render_string(WaRenderAPI * api, float x, float y, const char * string)
 {
     while (*string != 0)
@@ -1053,6 +1107,8 @@ int main()
     
     ui.init(&api);
     
+    ui.get_control(ui.root_control_id)->anchor = {{0.1, 0.1}, {0.9, 0.9}};
+    
     auto button_type_id = ui.control_type_get("Button");
     auto c_id = ui.control_create(button_type_id);
     ui.control_add_child(ui.root_control_id, c_id);
@@ -1062,7 +1118,7 @@ int main()
     {
         control->rect.pos = {4, 52};
         control->rect.size = {48, 32};
-        control->bg_color = Color::RED;
+        control->bg_color = Color{64, 128, 192, 255};
         printf("%f %f\n", control->rect.pos.x, control->rect.pos.y);
     }
     else
