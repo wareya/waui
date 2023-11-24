@@ -241,6 +241,22 @@ struct WaEvent
     uint64_t data = 0; // e.g. pressed / released
 };
 
+union WaSignalData
+{
+    uint8_t bytes[16];
+    float floats[4];
+    Vec2 vec2s[2];
+};
+
+struct WaSignal
+{
+    uint64_t control_id; // not necessary, but allows for cleaner signal-handling code
+    uint64_t control_type; // because inheritance
+    uint64_t type;
+    WaSignalData data;
+    void * extra_data;
+};
+
 struct WaUI;
 struct WaControl;
 struct WaControlAPI;
@@ -251,7 +267,10 @@ struct WaControlAPI
 {
     WaControlAPI()
     {
+        type_id = 0;
+        
         data = nullptr;
+        
         init = nullptr;
         destruct = nullptr;
         
@@ -260,9 +279,14 @@ struct WaControlAPI
         reflow = nullptr;
         render = nullptr;
         get_min_size = nullptr;
+        
+        signal_destruct = nullptr;
     }
     
+    uint64_t type_id;
+    
     void * data;
+    
     void (*init)(WaControl * control);
     void (*destruct)(WaControl * control);
     
@@ -273,6 +297,8 @@ struct WaControlAPI
     bool (*reflow)(WaControl * control, WaUI * ui);
     void (*render)(WaControl * control, WaUI * ui, WaRenderAPI * api);
     Vec2 (*get_min_size)(WaControl * control, WaUI * ui);
+    
+    void (*signal_destruct)(WaControl * control, WaUI * ui, WaSignal * signal);
 };
 
 // helper just to make building control subtypes cleaner / harder to mess up; not architecturally necessary
@@ -285,6 +311,7 @@ struct WaControlAPIBasis
     static bool reflow(WaControl * control, WaUI * ui);
     static void render(WaControl * control, WaUI * ui, WaRenderAPI * api);
     static Vec2 get_min_size(WaControl * control, WaUI * ui);
+    static void signal_destruct(WaControl * control, WaUI * ui, WaSignal * signal);
 };
 
 struct WaControl
@@ -315,19 +342,25 @@ struct WaControl
     WaControlAPI type_info;
     std::vector<uint64_t> children;
     
+    std::vector<WaSignal> signals;
+    
     // returns true if the event has been "consumed"
     bool feed_event(WaUI * ui, WaEvent event, Vec2 pos_offset);
+    
     void fit_rect(WaUI * ui, Rect2 rect);
     ptrdiff_t find_child(uint64_t id);
     
+    void clear_all_signals(WaUI * ui);
+    
     // methods with callbacks:
     
-    // returns true if the event has been "consumed"
     void think(WaUI * ui, uint64_t delta);
+    // returns true if the event has been "consumed"
     bool handle_event(WaUI * ui, WaEvent event, Vec2 pos_offset);
     void reflow(WaUI * ui);
     void render(WaUI * ui, WaRenderAPI * api);
     Vec2 get_min_size(WaUI * ui);
+    void signal_destruct(WaUI * ui, WaSignal * signal);
 };
 
 struct WaUI
@@ -377,6 +410,8 @@ struct WaUI
     void render_string(WaRenderAPI * api, float x, float y, const char * string, Color color);
     void render_ascii_char(WaRenderAPI * api, float x, float y, uint8_t c, Color color);
     void render_ninepatch(WaRenderAPI * api, uint64_t texture, Rect2 dest, Rect2 src_outer, Rect2 src_inner, Vec2 texture_size, Color color);
+    
+    void clear_all_signals();
     
 protected:
     uint64_t clicked_control = 0;
@@ -436,12 +471,26 @@ struct WaButton : public WaControlAPIBasis
     {
         if (event.type == WaEvent::MOUSE_BUTTON_PRESSED)
         {
-            printf("Press detected on BUTTON %lld\n", control->id);
+            control->signals.push_back(WaSignal {
+                control->id,
+                control->type_info.type_id,
+                0,
+                {},
+                nullptr
+            });
+            //printf("Press detected on BUTTON %lld\n", control->id);
             return true;
         }
         if (event.type == WaEvent::MOUSE_BUTTON_RELEASED)
         {
-            printf("Release detected on BUTTON %lld\n", control->id);
+            control->signals.push_back(WaSignal {
+                control->id,
+                control->type_info.type_id,
+                1,
+                {},
+                nullptr
+            });
+            //printf("Release detected on BUTTON %lld\n", control->id);
             return true;
         }
         return false;
@@ -475,6 +524,7 @@ struct WaButton : public WaControlAPIBasis
         string_size += control->padding.b;
         return string_size;// + Vec2{5, 5};
     }
+    static void signal_destruct(WaControl * control, WaUI * ui, WaSignal * signal) { }
 };
 
 struct WaList : public WaControlAPIBasis
@@ -509,6 +559,7 @@ struct WaList : public WaControlAPIBasis
     {
         return {0, 0};
     }
+    static void signal_destruct(WaControl * control, WaUI * ui, WaSignal * signal) { }
 };
 
 void WaControl::think(WaUI * ui, uint64_t delta)
@@ -611,6 +662,19 @@ void WaControl::reflow(WaUI * ui)
     }
 }
 
+void WaControl::clear_all_signals(WaUI * ui)
+{
+    for (auto & signal : signals)
+        signal_destruct(ui, &signal);
+    signals.clear();
+    
+    for (auto child_id : children)
+    {
+        auto control = ui->get_control(child_id);
+        control->clear_all_signals(ui);
+    }
+}
+
 void WaControl::render(WaUI * ui, WaRenderAPI * api)
 {
     if (draw_bg)
@@ -626,6 +690,12 @@ Vec2 WaControl::get_min_size(WaUI * ui)
     if (type_info.get_min_size)
         ret = ret.max(type_info.get_min_size(this, ui));
     return ret;
+}
+
+void WaControl::signal_destruct(WaUI * ui, WaSignal * signal)
+{
+    if (type_info.signal_destruct)
+        type_info.signal_destruct(this, ui, signal);
 }
 
 void WaControl::fit_rect(WaUI * ui, Rect2 parent_rect)
@@ -686,6 +756,7 @@ uint64_t WaUI::control_create(uint64_t type_id)
     auto control = controls[id];
     
     control->type_id = type_id;
+    control->type_info.type_id = type_id;
     
     if (control_types.count(type_id) > 0)
         control->type_info = control_types[type_id];
@@ -775,6 +846,11 @@ std::vector<uint64_t> WaUI::get_children(uint64_t id)
     return {};
 }
 
+void WaUI::clear_all_signals()
+{
+    controls[root_control_id]->clear_all_signals(this);
+}
+
 void WaUI::think(uint64_t delta)
 {
     delta = delta;
@@ -829,6 +905,7 @@ uint64_t WaUI::control_type_add_basis(const char * name)
     api.reflow = T::reflow;
     api.render = T::render;
     api.get_min_size = T::get_min_size;
+    api.signal_destruct = T::signal_destruct;
     
     return control_type_add(name, api);
 }
@@ -1182,9 +1259,28 @@ int main()
             feed_event_to_ui(event, ui);
         }
         
+        auto button_1 = ui.get_control(button_1_id);
+        for (auto signal : button_1->signals)
+        {
+            if (signal.type == 0)
+                printf("Pressed on button 1!\n");
+            else if (signal.type == 1)
+                printf("Released on button 1!\n");
+        }
+        auto button_2 = ui.get_control(button_2_id);
+        for (auto signal : button_2->signals)
+        {
+            if (signal.type == 0)
+                printf("Ah, yes, button 2. It just got pressed.\n");
+            else if (signal.type == 1)
+                printf("Ah, yes, button 2. It just got released!\n");
+        }
+        
         ui.render_scene(&api);
         ui.think(new_time - time);
         time = new_time;
+        
+        ui.clear_all_signals();
         
         SDL_Delay(1);
     }
