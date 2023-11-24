@@ -10,16 +10,22 @@
 #include <algorithm>
 #include <optional>
 
+/*
+TODO:
+- clipping children (requires adding a rendering api for controlling it)
+- dropdown menu
+- scrolling container
+- tab container
+- label with line wrapping
+- non-monospace text
+- font callback system
+*/
+
 #include <SDL.h>
 
 #include "images.h"
 
 #define USE_GEOMETRY_FOR_NINEPATCH 1
-
-float lerp(float a, float b, float t)
-{
-    return a * (1.0 - t) + b * t;
-}
 
 struct Color
 {
@@ -301,19 +307,6 @@ struct WaControlAPI
     void (*signal_destruct)(WaControl * control, WaUI * ui, WaSignal * signal);
 };
 
-// helper just to make building control subtypes cleaner / harder to mess up; not architecturally necessary
-struct WaControlAPIBasis
-{
-    static void init(WaControl * control);
-    static void destruct(WaControl * control);
-    static void think(WaControl * control, WaUI * ui, uint64_t delta);
-    static bool handle_event(WaControl * control, WaUI * ui, WaEvent event, Vec2 pos_offset);
-    static bool reflow(WaControl * control, WaUI * ui);
-    static void render(WaControl * control, WaUI * ui, WaRenderAPI * api);
-    static Vec2 get_min_size(WaControl * control, WaUI * ui);
-    static void signal_destruct(WaControl * control, WaUI * ui, WaSignal * signal);
-};
-
 struct WaControl
 {
     friend WaUI;
@@ -338,6 +331,7 @@ struct WaControl
     bool draw_bg = true;
     bool mouse_to_self = true;
     bool mouse_to_children = true;
+    bool clip_children = true;
     
     WaControlAPI type_info;
     std::vector<uint64_t> children;
@@ -445,7 +439,7 @@ private:
     void render_control(WaRenderAPI * api, uint64_t id);
 };
 
-struct WaButton : public WaControlAPIBasis
+struct WaButton
 {
     struct WaButtonData
     {
@@ -462,10 +456,6 @@ struct WaButton : public WaControlAPIBasis
         if (control->type_info.data)
             delete (WaButtonData *) control->type_info.data;
         control->type_info.data = nullptr;
-    }
-    static void think(WaControl * control, WaUI * ui, uint64_t delta)
-    {
-        
     }
     static bool handle_event(WaControl * control, WaUI * ui, WaEvent event, Vec2 pos_offset)
     {
@@ -495,10 +485,6 @@ struct WaButton : public WaControlAPIBasis
         }
         return false;
     }
-    static bool reflow(WaControl * control, WaUI * ui)
-    {
-        return false;
-    }
     static void render(WaControl * control, WaUI * ui, WaRenderAPI * api)
     {
         auto data = (WaButtonData *) control->type_info.data;
@@ -522,16 +508,12 @@ struct WaButton : public WaControlAPIBasis
         auto string_size = Vec2{ui->string_get_width(str), ui->string_get_height(str)};
         string_size += control->padding.a;
         string_size += control->padding.b;
-        return string_size;// + Vec2{5, 5};
+        return string_size;
     }
-    static void signal_destruct(WaControl * control, WaUI * ui, WaSignal * signal) { }
 };
 
-struct WaList : public WaControlAPIBasis
+struct WaList
 {
-    static void init(WaControl * control) {}
-    static void destruct(WaControl * control) {}
-    static void think(WaControl * control, WaUI * ui, uint64_t delta) {}
     static bool handle_event(WaControl * control, WaUI * ui, WaEvent event, Vec2 pos_offset)
     {
         return false;
@@ -554,12 +536,10 @@ struct WaList : public WaControlAPIBasis
         
         return true;
     }
-    static void render(WaControl * control, WaUI * ui, WaRenderAPI * api) {}
     static Vec2 get_min_size(WaControl * control, WaUI * ui) // FIXME iterate over children?
     {
         return {0, 0};
     }
-    static void signal_destruct(WaControl * control, WaUI * ui, WaSignal * signal) { }
 };
 
 void WaControl::think(WaUI * ui, uint64_t delta)
@@ -898,14 +878,22 @@ template<typename T>
 uint64_t WaUI::control_type_add_basis(const char * name)
 {
     WaControlAPI api;
-    api.init = T::init;
-    api.destruct = T::destruct;
-    api.think = T::think;
-    api.handle_event = T::handle_event;
-    api.reflow = T::reflow;
-    api.render = T::render;
-    api.get_min_size = T::get_min_size;
-    api.signal_destruct = T::signal_destruct;
+    if constexpr (requires { T::init; })
+        api.init = T::init;
+    if constexpr (requires { T::destruct; })
+        api.destruct = T::destruct;
+    if constexpr (requires { T::think; })
+        api.think = T::think;
+    if constexpr (requires { T::handle_event; })
+        api.handle_event = T::handle_event;
+    if constexpr (requires { T::reflow; })
+        api.reflow = T::reflow;
+    if constexpr (requires { T::render; })
+        api.render = T::render;
+    if constexpr (requires { T::get_min_size; })
+        api.get_min_size = T::get_min_size;
+    if constexpr (requires { T::signal_destruct; })
+        api.signal_destruct = T::signal_destruct;
     
     return control_type_add(name, api);
 }
