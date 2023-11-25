@@ -9,15 +9,27 @@
 #include <memory>
 #include <algorithm>
 #include <optional>
+#include <typeindex>
 
 /*
 TODO:
-- dropdown menu
+- hlist container
+- grid container (true and stretchy)
 - scrolling container
 - tab container
+
+- dropdown menu
 - label with line wrapping
+- single-line text input 
+- multi-line text input
+- slider input
+- number input
+- knob input
+
+- cached min size calculation
+
 - non-monospace text
-- font callback system
+- text shaping callback system
 */
 
 #include <SDL.h>
@@ -307,7 +319,35 @@ struct WaControlAPI
     
     uint64_t type_id;
     
-    void * data;
+    template<typename T>
+    T * set_data(T * new_data)
+    {
+        data = (void *) new_data;
+        data_type = std::type_index(typeid(T));
+        return new_data;
+    }
+    
+    template<typename T>
+    void delete_data()
+    {
+        if (data != nullptr)
+        {
+            if (std::type_index(typeid(T)) == data_type)
+                delete (T *)data;
+            else
+                raise(SIGSEGV);
+        }
+        
+        data = nullptr;
+    }
+    
+    template<typename T>
+    T * get_data()
+    {
+        if (std::type_index(typeid(T)) == data_type)
+            return (T *)data;
+        return nullptr;
+    }
     
     void (*init)(WaControl * control);
     void (*destruct)(WaControl * control);
@@ -321,6 +361,10 @@ struct WaControlAPI
     Vec2 (*get_min_size)(WaControl * control, WaUI * ui);
     
     void (*signal_destruct)(WaControl * control, WaUI * ui, WaSignal * signal);
+
+private:
+    std::type_index data_type = std::type_index(typeid(void));
+    void * data;
 };
 
 struct WaControl
@@ -456,23 +500,20 @@ private:
     void render_control(WaRenderAPI * api, uint64_t id);
 };
 
+struct WaButtonData
+{
+    std::string label;
+};
 struct WaButton
 {
-    struct WaButtonData
-    {
-        std::string label;
-    };
     static void init(WaControl * control)
     {
-        control->type_info.data = (void *) new WaButtonData();
-        auto data = (WaButtonData *) control->type_info.data;
+        auto data = control->type_info.set_data(new WaButtonData());
         data->label = "no YOU are a button";
     }
     static void destruct(WaControl * control)
     {
-        if (control->type_info.data)
-            delete (WaButtonData *) control->type_info.data;
-        control->type_info.data = nullptr;
+        control->type_info.delete_data<WaButtonData>();
     }
     static bool handle_event(WaControl * control, WaUI * ui, WaEvent event, Vec2 pos_offset)
     {
@@ -504,7 +545,7 @@ struct WaButton
     }
     static void render(WaControl * control, WaUI * ui, WaRenderAPI * api)
     {
-        auto data = (WaButtonData *) control->type_info.data;
+        auto data = control->type_info.get_data<WaButtonData>();
         auto str = data->label.data();
         
         auto available_size = control->rect.size;
@@ -519,7 +560,7 @@ struct WaButton
     }
     static Vec2 get_min_size(WaControl * control, WaUI * ui)
     {
-        auto data = (WaButtonData *) control->type_info.data;
+        auto data = control->type_info.get_data<WaButtonData>();
         auto str = data->label.data();
         
         auto string_size = Vec2{ui->string_get_width(str), ui->string_get_height(str)};
@@ -529,14 +570,25 @@ struct WaButton
     }
 };
 
+struct WaListData
+{
+    bool is_horizontal = true;
+};
 struct WaList
 {
+    static void init(WaControl * control)
+    {
+        control->type_info.set_data(new WaListData());
+    }
     static bool handle_event(WaControl * control, WaUI * ui, WaEvent event, Vec2 pos_offset)
     {
         return false;
     }
     static bool reflow(WaControl * control, WaUI * ui)
     {
+        auto data = control->type_info.get_data<WaListData>();
+        auto is_horizontal = data ? data->is_horizontal : false;
+        
         auto padded_rect = Rect2{{0, 0}, control->rect.size};
         padded_rect.pos += control->padding.a;
         padded_rect.size -= control->padding.a + control->padding.b;
@@ -547,8 +599,16 @@ struct WaList
             control->fit_rect(ui, padded_rect);
             control->reflow(ui);
             
-            padded_rect.pos.y += control->rect.size.y;
-            padded_rect.size.y -= control->rect.size.y;
+            if (is_horizontal)
+            {
+                padded_rect.pos.x += control->rect.size.x;
+                padded_rect.size.x -= control->rect.size.x;
+            }
+            else
+            {
+                padded_rect.pos.y += control->rect.size.y;
+                padded_rect.size.y -= control->rect.size.y;
+            }
         }
         
         return true;
@@ -1318,11 +1378,12 @@ int main()
                 printf("Ah, yes, button 2. It just got released!\n");
         }
         
-        ui.render_scene(&api);
         ui.think(new_time - time);
-        time = new_time;
         
         ui.clear_all_signals();
+        
+        ui.render_scene(&api);
+        time = new_time;
         
         SDL_Delay(1);
     }
