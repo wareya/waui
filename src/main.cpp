@@ -13,7 +13,6 @@
 
 /*
 TODO:
-- hlist container
 - grid container (true and stretchy)
 - scrolling container
 - tab container
@@ -338,6 +337,7 @@ struct WaControlAPI
                 raise(SIGSEGV);
         }
         
+        data_type = std::type_index(typeid(void));
         data = nullptr;
     }
     
@@ -572,7 +572,7 @@ struct WaButton
 
 struct WaListData
 {
-    bool is_horizontal = true;
+    bool is_horizontal = false;
 };
 struct WaList
 {
@@ -1018,6 +1018,40 @@ void WaUI::init(WaRenderAPI * api)
             }
         }
     }
+    
+    for (uint32_t y0 = 0; y0 < 8*13; y0 += 13)
+    {
+        for (uint32_t x0 = 0; x0 < 32*7; x0 += 7)
+        {
+            int32_t left = 7;
+            int32_t right = 0;
+            for (uint32_t y = y0; y < y0 + 13; y += 1)
+            {
+                for (uint32_t x = x0; x < x0 + 7; x += 1)
+                {
+                    size_t index = (y * font_image_width + x) * 4 + 3;
+                    auto c = font_data[index];
+                    if (c > 127)
+                    {
+                        left = std::min(int32_t(x - x0), left);
+                        right = std::max(int32_t(x - x0), right);
+                    }
+                }
+            }
+            
+            if (left <= right)
+            {
+                font_advance.push_back(right - left + 2);
+                font_offset.push_back(left);
+            }
+            else
+            {
+                font_advance.push_back(5);
+                font_offset.push_back(0);
+            }
+        }
+    }
+    
     font_texture = api->texture_create(userdata, font_image_width, font_image_height, true, font_data);
     free(font_data);
     
@@ -1039,21 +1073,23 @@ float WaUI::string_get_height(const char * string)
 }
 float WaUI::string_get_width(const char * string)
 {
-    auto n = 0;
+    auto n = 1;
     while (*string != 0)
     {
+        n += font_advance[*string];
         string += 1;
-        n += 1;
     }
-    return n * 7;
+    return n;
 }
 void WaUI::render_string(WaRenderAPI * api, float x, float y, const char * string, Color color)
 {
+    x += 1;
     while (*string != 0)
     {
-        render_ascii_char(api, x, y, *string, color);
+        auto offset = font_offset[*string];
+        render_ascii_char(api, x - offset, y, *string, color);
+        x += font_advance[*string];
         string += 1;
-        x += 7;
     }
 }
 void WaUI::render_ascii_char(WaRenderAPI * api, float x, float y, uint8_t c, Color color)
