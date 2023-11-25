@@ -1302,7 +1302,7 @@ int main()
         }
         
         auto button_1 = ui.get_control(button_1_id);
-        for (auto signal : button_1->signals)
+        for (auto & signal : button_1->signals)
         {
             if (signal.type == 0)
                 printf("Pressed on button 1!\n");
@@ -1310,7 +1310,7 @@ int main()
                 printf("Released on button 1!\n");
         }
         auto button_2 = ui.get_control(button_2_id);
-        for (auto signal : button_2->signals)
+        for (auto & signal : button_2->signals)
         {
             if (signal.type == 0)
                 printf("Ah, yes, button 2. It just got pressed.\n");
