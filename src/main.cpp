@@ -12,7 +12,6 @@
 
 /*
 TODO:
-- clipping children (requires adding a rendering api for controlling it)
 - dropdown menu
 - scrolling container
 - tab container
@@ -150,6 +149,18 @@ struct Rect2
         ret.set_end(end);
         return ret;
     }
+    Rect2 clip(const Rect2 & other) const
+    {
+        auto ret = *this;
+        ret.pos.x = std::max(pos.x, other.pos.x);
+        ret.pos.y = std::max(pos.y, other.pos.y);
+        auto end_a = get_end();
+        auto end_b = other.get_end();
+        end_a.x = std::min(end_a.x, end_b.x);
+        end_a.y = std::min(end_a.y, end_b.y);
+        ret.set_end(end_a);
+        return ret;
+    }
     bool contains_point(Vec2 point)
     {
         auto end = get_end();
@@ -178,6 +189,8 @@ struct WaRenderAPI
         draw_finish_frame = nullptr;
         draw_rect = nullptr;
         draw_texture_rect = nullptr;
+        draw_clip_rect_set = nullptr;
+        draw_clip_rect_clear = nullptr;
         texture_create = nullptr;
         texture_destroy = nullptr;
     }
@@ -191,6 +204,9 @@ struct WaRenderAPI
         uint8_t r, uint8_t g, uint8_t b, uint8_t a,
         uint64_t tex, float tex_x, float tex_y, float tex_w, float tex_h,
         uint32_t tex_size_w, uint32_t tex_size_h);
+    
+    void (*draw_clip_rect_set)(void * userdata, float x, float y, float w, float h);
+    void (*draw_clip_rect_clear)(void * userdata);
     
     // The given image data does not become owned by your application; you must copy it.
     // The texture data is stored one pixel at a time (not a planar format), 8 bit per channel RGBA, and exactly (w * h * 4) bytes long.
@@ -427,6 +443,7 @@ private:
     std::vector<int> font_offset;
     
     Vec2 rect_offset;
+    Rect2 last_clip_rect;
     
     uint64_t next_type_id = 1;
     std::unordered_map<uint64_t, WaControlAPI> control_types;
@@ -855,6 +872,11 @@ void WaUI::render_scene(WaRenderAPI * api)
     api->draw_begin_frame(userdata);
     
     rect_offset = {0, 0};
+    
+    api->draw_clip_rect_clear(userdata);
+    last_clip_rect = {{0, 0}, size};
+    api->draw_clip_rect_set(userdata, last_clip_rect.pos.x, last_clip_rect.pos.y, last_clip_rect.size.x, last_clip_rect.size.y);
+    
     render_control(api, root_control_id);
     
     //render_string(api, 100, 100, "Drawing random text to the screen!!!");
@@ -1007,14 +1029,24 @@ void WaUI::render_control(WaRenderAPI * api, uint64_t id)
     auto pos = control->rect.pos + rect_offset;
     auto prev_rect_offset = rect_offset;
     
+    if (control->clip_children)
+    {
+        last_clip_rect = last_clip_rect.clip({pos, control->rect.size});
+        api->draw_clip_rect_set(userdata, last_clip_rect.pos.x, last_clip_rect.pos.y, last_clip_rect.size.x, last_clip_rect.size.y);
+    }
+    
     rect_offset = pos;
     
     control->render(this, api);
     //printf("rendering %d (%f %f %f %f)\n", id, pos.x, pos.y, size.x, size.y);
     
+    auto clip_at_start = last_clip_rect;
+    
     for (auto child_id : get_children(id))
     {
         render_control(api, child_id);
+        last_clip_rect = clip_at_start;
+        api->draw_clip_rect_set(userdata, last_clip_rect.pos.x, last_clip_rect.pos.y, last_clip_rect.size.x, last_clip_rect.size.y);
     }
     
     rect_offset = prev_rect_offset;
@@ -1176,6 +1208,26 @@ int main()
 #endif // else of #if !USE_GEOMETRY_FOR_NINEPATCH
     };
     
+    auto sdl_clip_rect_set = [](void * userdata, float x, float y, float w, float h)
+    {
+        auto context = (CallbackContext *) userdata;
+        auto renderer = context->renderer;
+        
+        SDL_Rect rect;
+        rect.x = (int)x;
+        rect.y = (int)y;
+        rect.w = (int)w;
+        rect.h = (int)h;
+        
+        SDL_RenderSetClipRect(renderer, &rect);
+    };
+    auto sdl_clip_rect_clear = [](void * userdata)
+    {
+        auto context = (CallbackContext *) userdata;
+        auto renderer = context->renderer;
+        SDL_RenderSetClipRect(renderer, nullptr);
+    };
+    
     auto sdl_texture_create = [](void * userdata, uint32_t w, uint32_t h, bool filter, const unsigned char * data)
     {
         auto context = (CallbackContext *) userdata;
@@ -1210,6 +1262,8 @@ int main()
     api.draw_finish_frame = sdl_finish_frame;
     api.draw_rect = sdl_draw_rect;
     api.draw_texture_rect = sdl_draw_texture_rect;
+    api.draw_clip_rect_set = sdl_clip_rect_set;
+    api.draw_clip_rect_clear = sdl_clip_rect_clear;
     api.texture_create = sdl_texture_create;
     api.texture_destroy = sdl_texture_destroy;
     
