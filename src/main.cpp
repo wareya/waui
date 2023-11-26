@@ -17,6 +17,7 @@ TODO:
 - scrolling container
 - tab container
 
+- checkbox/radio buttons
 - dropdown menu
 - label with line wrapping
 - single-line text input 
@@ -27,7 +28,6 @@ TODO:
 
 - cached min size calculation
 
-- non-monospace text
 - text shaping callback system
 */
 
@@ -49,18 +49,20 @@ struct Color
     static const Color BLACK;
     static const Color GRAY;
     static const Color WHITE;
+    static const Color OFFWHITE;
     static const Color RED;
     static const Color GREEN;
     static const Color BLUE;
     static const Color YELLOW;
 };
-constexpr const Color Color::BLACK  {  0,   0,   0, 255};
-constexpr const Color Color::GRAY   {127, 127, 127, 255};
-constexpr const Color Color::WHITE  {255, 255, 255, 255};
-constexpr const Color Color::RED    {255,   0,   0, 255};
-constexpr const Color Color::GREEN  {  0, 255,   0, 255};
-constexpr const Color Color::BLUE   {  0,   0, 255, 255};
-constexpr const Color Color::YELLOW {255, 255,   0, 255};
+constexpr const Color Color::BLACK       {  0,   0,   0, 255};
+constexpr const Color Color::GRAY        {127, 127, 127, 255};
+constexpr const Color Color::WHITE       {255, 255, 255, 255};
+constexpr const Color Color::OFFWHITE    {224, 224, 224, 255};
+constexpr const Color Color::RED         {255,   0,   0, 255};
+constexpr const Color Color::GREEN       {  0, 255,   0, 255};
+constexpr const Color Color::BLUE        {  0,   0, 255, 255};
+constexpr const Color Color::YELLOW      {255, 255,   0, 255};
 
 struct Vec2
 {
@@ -237,6 +239,8 @@ struct WaEvent
         MOUSE_POSITION,
         MOUSE_BUTTON_PRESSED,
         MOUSE_BUTTON_RELEASED,
+        TEXT,
+        TEXTEDIT,
     };
     enum Action
     {
@@ -245,10 +249,10 @@ struct WaEvent
         DOWN,
         LEFT,
         RIGHT,
-        NEXT,
-        PREV,
-        NEXT_ALT,
-        PREV_ALT,
+        NEXT, // e.g. tab
+        PREV, // e.g. shift-tab
+        NEXT_ALT, // e.g. ctrl-tab
+        PREV_ALT, // e.g. ctrl-shift-tab
         PGUP,
         PGDN,
         CONFIRM,
@@ -272,6 +276,9 @@ struct WaEvent
     float x = 0.0;
     float y = 0.0;
     uint64_t data = 0; // e.g. pressed / released
+    
+    // The application is responsible for allocating and freeing this memory. WaUI will copy it, not hold onto it.
+    const void * ptr_data = nullptr;
 };
 
 union WaSignalData
@@ -460,20 +467,23 @@ struct WaUI
     
     float string_get_height(const char * string);
     float string_get_width(const char * string);
+    float string_get_cursor_location(const char * string, int cursor);
     
     void render_string(WaRenderAPI * api, float x, float y, const char * string, Color color);
     void render_ascii_char(WaRenderAPI * api, float x, float y, uint8_t c, Color color);
+    void render_rect(WaRenderAPI * api, Rect2 dest, Color color);
     void render_ninepatch(WaRenderAPI * api, uint64_t texture, Rect2 dest, Rect2 src_outer, Rect2 src_inner, Vec2 texture_size, Color color);
     
     void clear_all_signals();
     
+    uint64_t test_texture = 0;
+    uint64_t panel_texture = 0;
+    uint64_t micro_bg_texture = 0;
+    uint64_t font_texture = 0;
+    
 protected:
     uint64_t clicked_control = 0;
     uint64_t clicked_control_count = 0;
-    
-    uint64_t test_texture = 0;
-    uint64_t panel_texture = 0;
-    uint64_t font_texture = 0;
     
 private:
     template<typename T>
@@ -567,6 +577,158 @@ struct WaButton
         string_size += control->padding.a;
         string_size += control->padding.b;
         return string_size;
+    }
+};
+
+struct WaLineEditData
+{
+    std::string text;
+    std::string text_transient;
+    int cursor = 0;
+    int selection_end = -1;
+};
+struct WaLineEdit
+{
+    // TODO:
+    // - "input changed" signal and enter key support
+    // - IME placement callback
+    // - text cursor blink and better text cursor
+    static void init(WaControl * control)
+    {
+        control->modulate = Color::BLACK;
+        
+        auto data = control->type_info.set_data(new WaLineEditData());
+        data->text = "";
+        control->draw_bg = false;
+    }
+    static void destruct(WaControl * control)
+    {
+        control->type_info.delete_data<WaLineEditData>();
+    }
+    static bool handle_event(WaControl * control, WaUI * ui, WaEvent event, Vec2 pos_offset)
+    {
+        auto data = control->type_info.get_data<WaLineEditData>();
+        if (event.type == WaEvent::ACTION)
+        {
+            if (event.subtype == WaEvent::Action::LEFT)
+                data->cursor = std::clamp(data->cursor - 1, 0, (int)data->text.size());
+            if (event.subtype == WaEvent::Action::RIGHT)
+                data->cursor = std::clamp(data->cursor + 1, 0, (int)data->text.size());
+        }
+        if (event.type == WaEvent::TEXTEDIT)
+        {
+            puts("got text edit");
+            auto text = (const char *) event.ptr_data;
+            
+            if (*text == '\x09') // horizontal tab
+                text = " ";
+            if (*text == '\x0A') // enter key. not supported yet
+                return false;
+            
+            data->text_transient = data->text;
+            
+            if (*text == '\x7F' || *text == '\x08')
+            { 
+                if (data->selection_end > data->cursor)
+                    data->text_transient.erase(data->cursor, data->selection_end - data->cursor);
+                // delete key
+                else if (*text == '\x7F' and (size_t)data->cursor < data->text.size())
+                    data->text_transient.erase(data->cursor, 1);
+                // backspace key
+                else if (*text == '\x08' and data->cursor > 0)
+                {
+                    data->text_transient.erase(data->cursor - 1, 1);
+                    data->cursor -= 1;
+                }
+            }
+            else
+            {
+                if (data->selection_end > data->cursor)
+                    data->text_transient.erase(data->cursor, data->selection_end - data->cursor);
+                
+                data->text_transient.insert(data->cursor, text);
+            }
+            
+            data->selection_end = -1;
+            return true;
+        }
+        if (event.type == WaEvent::TEXT)
+        {
+            puts("got text");
+            auto text = (const char *) event.ptr_data;
+            
+            if (*text == '\x09') // horizontal tab
+                text = " ";
+            if (*text == '\x0A') // enter key. not supported yet
+                return false;
+            
+            if (*text == '\x7F' || *text == '\x08')
+            { 
+                if (data->selection_end > data->cursor)
+                    data->text.erase(data->cursor, data->selection_end - data->cursor);
+                // delete key
+                else if (*text == '\x7F' and (size_t)data->cursor < data->text.size())
+                    data->text.erase(data->cursor, 1);
+                // backspace key
+                else if (*text == '\x08' and data->cursor > 0)
+                {
+                    data->text.erase(data->cursor - 1, 1);
+                    data->cursor -= 1;
+                }
+            }
+            else
+            {
+                if (data->selection_end > data->cursor)
+                    data->text.erase(data->cursor, data->selection_end - data->cursor);
+                
+                data->text.insert(data->cursor, text);
+                data->cursor += strlen(text);
+            }
+            
+            data->selection_end = -1;
+            data->text_transient = data->text;
+            
+            return true;
+        }
+        return false;
+    }
+    static void render(WaControl * control, WaUI * ui, WaRenderAPI * api)
+    {
+        ui->render_ninepatch(api, ui->micro_bg_texture, {{0, 0}, control->rect.size}, {{1, 1}, {5, 5}}, {{2.5, 2.5}, {1, 1}}, {micro_bg_width, micro_bg_height}, Color::OFFWHITE);
+        
+        auto data = control->type_info.get_data<WaLineEditData>();
+        auto str = data->text.data();
+        
+        auto available_size = control->rect.size;
+        available_size -= control->padding.a;
+        available_size -= control->padding.b;
+        
+        auto string_size = Vec2{ui->string_get_width(str), ui->string_get_height(str)};
+        
+        auto pad = (available_size - string_size) / 2 + control->padding.a;
+        pad.x = control->padding.a.x;
+        
+        ui->render_string(api, pad.x, pad.y, str, control->modulate);
+        
+        auto cursor_x = pad.x + ui->string_get_cursor_location(str, data->cursor);
+        
+        //ui->render_ascii_char(api, cursor_x - 4, pad.y, '|', control->modulate);
+        ui->render_rect(api, {{cursor_x - 1, pad.y}, {1, 13}}, control->modulate);
+    }
+    static Vec2 get_min_size(WaControl * control, WaUI * ui)
+    {
+        auto data = control->type_info.get_data<WaLineEditData>();
+        auto str = data->text.data();
+        
+        auto string_size = Vec2{ui->string_get_width(str), ui->string_get_height(str)};
+        string_size += control->padding.a;
+        string_size += control->padding.b;
+        string_size.x = std::max(64.0f, string_size.x);
+        return string_size;
+    }
+    static void signal_destruct(WaControl * control, WaUI * ui, WaSignal * signal)
+    {
+        
     }
 };
 
@@ -735,7 +897,7 @@ void WaControl::clear_all_signals(WaUI * ui)
 void WaControl::render(WaUI * ui, WaRenderAPI * api)
 {
     if (draw_bg)
-        ui->render_ninepatch(api, ui->panel_texture, {{0, 0}, rect.size}, {{0, 0}, {16, 16}}, {{3.5, 3.5}, {9, 9}}, {panel_image_width, panel_image_height}, bg_color);
+        ui->render_ninepatch(api, ui->panel_texture, {{0, 0}, rect.size}, {{1, 1}, {15, 15}}, {{3.5, 3.5}, {9, 9}}, {panel_image_width, panel_image_height}, bg_color);
     
     if (type_info.render)
         type_info.render(this, ui, api);
@@ -997,6 +1159,7 @@ void WaUI::init(WaRenderAPI * api)
 {
     test_texture = api->texture_create(userdata, test_image_width, test_image_height, true, test_image);
     panel_texture = api->texture_create(userdata, panel_image_width, panel_image_height, true, panel_image);
+    micro_bg_texture = api->texture_create(userdata, micro_bg_width, micro_bg_height, true, micro_bg_image);
     
     auto font_data = (unsigned char *)malloc(font_image_width * font_image_height * 4);
     auto i = 0;
@@ -1055,8 +1218,9 @@ void WaUI::init(WaRenderAPI * api)
     font_texture = api->texture_create(userdata, font_image_width, font_image_height, true, font_data);
     free(font_data);
     
-    control_type_add_basis<WaButton>("Button");
     control_type_add_basis<WaList>("List");
+    control_type_add_basis<WaButton>("Button");
+    control_type_add_basis<WaLineEdit>("LineEdit");
 };
 void WaUI::clean_up(WaRenderAPI * api)
 {
@@ -1076,8 +1240,19 @@ float WaUI::string_get_width(const char * string)
     auto n = 1;
     while (*string != 0)
     {
-        n += font_advance[*string];
+        n += font_advance[(uint8_t)*string];
         string += 1;
+    }
+    return n;
+}
+float WaUI::string_get_cursor_location(const char * string, int cursor)
+{
+    auto n = 1;
+    while (*string != 0 and cursor > 0)
+    {
+        n += font_advance[(uint8_t)*string];
+        string += 1;
+        cursor -= 1;
     }
     return n;
 }
@@ -1086,9 +1261,9 @@ void WaUI::render_string(WaRenderAPI * api, float x, float y, const char * strin
     x += 1;
     while (*string != 0)
     {
-        auto offset = font_offset[*string];
+        auto offset = font_offset[(uint8_t)*string];
         render_ascii_char(api, x - offset, y, *string, color);
-        x += font_advance[*string];
+        x += font_advance[(uint8_t)*string];
         string += 1;
     }
 }
@@ -1182,22 +1357,35 @@ void WaUI::render_ninepatch(WaRenderAPI * api, uint64_t texture, Rect2 dest, Rec
     }
 }
 
+void WaUI::render_rect(WaRenderAPI * api, Rect2 dest, Color color)
+{
+    dest.pos += rect_offset;
+    
+    if (px_snapped_rendering)
+        dest = dest.round();
+    
+    api->draw_rect(userdata,
+        dest.pos.x, dest.pos.y, dest.size.x, dest.size.y,
+        color.r, color.g, color.b, color.a
+    );
+}
+
 void feed_event_to_ui(SDL_Event event, WaUI & ui)
 {
     if (event.type == SDL_WINDOWEVENT)
     {
         if (event.window.event == SDL_WINDOWEVENT_SIZE_CHANGED)
-            ui.feed_event(WaEvent{WaEvent::Type::RESIZE, 0, (float)event.window.data1, (float)event.window.data2, 0});
+            ui.feed_event(WaEvent{WaEvent::Type::RESIZE, 0, (float)event.window.data1, (float)event.window.data2});
     }
     else if (event.type == SDL_MOUSEMOTION)
-        ui.feed_event(WaEvent{WaEvent::Type::MOUSE_POSITION, 0, (float)event.motion.x, (float)event.motion.y, 0});
+        ui.feed_event(WaEvent{WaEvent::Type::MOUSE_POSITION, 0, (float)event.motion.x, (float)event.motion.y});
     else if (event.type == SDL_MOUSEBUTTONDOWN)
-        ui.feed_event(WaEvent{WaEvent::Type::MOUSE_BUTTON_PRESSED, event.button.button, (float)event.button.x, (float)event.button.y, 0});
+        ui.feed_event(WaEvent{WaEvent::Type::MOUSE_BUTTON_PRESSED, event.button.button, (float)event.button.x, (float)event.button.y});
     else if (event.type == SDL_MOUSEBUTTONUP)
-        ui.feed_event(WaEvent{WaEvent::Type::MOUSE_BUTTON_RELEASED, event.button.button, (float)event.button.x, (float)event.button.y, 0});
+        ui.feed_event(WaEvent{WaEvent::Type::MOUSE_BUTTON_RELEASED, event.button.button, (float)event.button.x, (float)event.button.y});
     else if (event.type == SDL_KEYDOWN)
     {
-        auto wa_event = WaEvent{WaEvent::Type::ACTION, 0, 0, 0, 1};
+        auto wa_event = WaEvent{WaEvent::Type::ACTION, WaEvent::Action::INVALID, 0, 0, 1};
         switch (event.key.keysym.sym)
         {
         case SDLK_UP:
@@ -1212,11 +1400,46 @@ void feed_event_to_ui(SDL_Event event, WaUI & ui)
         case SDLK_RIGHT:
             wa_event.subtype = WaEvent::Action::RIGHT;
             break;
-        default:
-            wa_event.subtype = WaEvent::Action::INVALID;
+        case SDLK_BACKSPACE:
+            ui.feed_event(WaEvent{WaEvent::Type::TEXT, 0, 0, 0, 0, "\x08"});
+            break;
+        case SDLK_TAB:
+            ui.feed_event(WaEvent{WaEvent::Type::TEXT, 0, 0, 0, 0, "\x09"});
+            break;
+        case SDLK_RETURN:
+            ui.feed_event(WaEvent{WaEvent::Type::TEXT, 0, 0, 0, 0, "\x0A"});
+            break;
+        case SDLK_DELETE:
+            ui.feed_event(WaEvent{WaEvent::Type::TEXT, 0, 0, 0, 0, "\x7F"});
+            break;
         }
         if (wa_event.subtype != WaEvent::Action::INVALID)
             ui.feed_event(wa_event);
+    }
+    else if (event.type == SDL_TEXTEDITING)
+    {
+        auto wa_event = WaEvent{WaEvent::Type::TEXTEDIT, 0, 0, 0, 0, 0};
+        wa_event.ptr_data = event.edit.text;
+        ui.feed_event(wa_event);
+        
+        printf("text edit: %s\n", event.edit.text);
+    }
+    else if (event.type == SDL_TEXTEDITING_EXT)
+    {
+        auto wa_event = WaEvent{WaEvent::Type::TEXTEDIT, 0, 0, 0, 0, 0};
+        wa_event.ptr_data = event.editExt.text;
+        ui.feed_event(wa_event);
+        
+        printf("text edit extended: %s\n", event.editExt.text);
+        SDL_free(event.editExt.text);
+    }
+    else if (event.type == SDL_TEXTINPUT)
+    {
+        auto wa_event = WaEvent{WaEvent::Type::TEXT, 0, 0, 0, 0, 0};
+        wa_event.ptr_data = event.edit.text;
+        ui.feed_event(wa_event);
+        
+        printf("text input: %s\n", event.text.text);
     }
 }
 
@@ -1241,6 +1464,9 @@ int main()
     auto renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED);
     if (!renderer)
         return fprintf(stderr, "failed to open SDL renderer"), -1;
+    
+    SDL_SetHint(SDL_HINT_IME_SHOW_UI, "1");
+    SDL_SetHint(SDL_HINT_IME_SUPPORT_EXTENDED_TEXT, "1");
     
     auto ui = WaUI();
     
@@ -1382,6 +1608,9 @@ int main()
     ui.get_control(button_1_id)->bg_color = Color{64, 128, 192, 255};
     ui.get_control(button_2_id)->modulate = Color::BLACK;
     
+    auto line_edit_type_id = ui.control_type_get("LineEdit");
+    auto line_edit_1_id = ui.control_create(line_edit_type_id);
+    ui.control_add_child(list_id, line_edit_1_id);
     
     uint64_t time = SDL_GetTicks64();
     

@@ -1,3 +1,17 @@
+const unsigned long int micro_bg_width = 6;
+const unsigned long int micro_bg_height = 6;
+const unsigned char micro_bg_image[144] = {
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 124,
+    0, 0, 0, 255, 0, 0, 0, 255, 0, 0, 0, 124, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 255, 192, 192, 192, 192, 192, 192, 192, 192,
+    0, 0, 0, 255, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 255,
+    255, 255, 255, 192, 255, 255, 255, 192, 0, 0, 0, 255, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 124, 0, 0, 0, 255, 0, 0, 0, 255,
+    0, 0, 0, 124, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+};
+
 const unsigned long int test_image_width = 8;
 const unsigned long int test_image_height = 8;
 const unsigned char test_image[256] = {
@@ -91,7 +105,7 @@ const unsigned char panel_image[1024] = {
 const unsigned long int font_image_width = 224;
 const unsigned long int font_image_height = 104;
 const unsigned char font_image[2912] = {
-        0, 0, 0, 0, 0, 0, 0, 254, 3, 248, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 254, 3, 248, 0, 0, 0, 0, 0, 0,
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 249, 240, 0,
     0, 0, 0, 254, 3, 248, 0, 0, 0, 0, 0, 0, 64, 0, 7, 0,
     8, 16, 32, 0, 0, 0, 0, 0, 1, 7, 248, 0, 0, 0, 0, 254,
