@@ -204,6 +204,7 @@ struct WaRenderAPI
         draw_texture_rect = nullptr;
         draw_clip_rect_set = nullptr;
         draw_clip_rect_clear = nullptr;
+        ime_rect_inform = nullptr;
         texture_create = nullptr;
         texture_destroy = nullptr;
     }
@@ -220,6 +221,8 @@ struct WaRenderAPI
     
     void (*draw_clip_rect_set)(void * userdata, float x, float y, float w, float h);
     void (*draw_clip_rect_clear)(void * userdata);
+    
+    void (*ime_rect_inform)(void * userdata, float x, float y, float w, float h);
     
     // The given image data does not become owned by your application; you must copy it.
     // The texture data is stored one pixel at a time (not a planar format), 8 bit per channel RGBA, and exactly (w * h * 4) bytes long.
@@ -469,6 +472,8 @@ struct WaUI
     float string_get_width(const char * string);
     float string_get_cursor_location(const char * string, int cursor);
     
+    void ime_rect_inform(WaRenderAPI * api, Rect2 dest);
+    
     void render_string(WaRenderAPI * api, float x, float y, const char * string, Color color);
     void render_ascii_char(WaRenderAPI * api, float x, float y, uint8_t c, Color color);
     void render_rect(WaRenderAPI * api, Rect2 dest, Color color);
@@ -584,6 +589,7 @@ struct WaLineEditData
 {
     std::string text;
     std::string text_transient;
+    int transient_length = 0;
     int cursor = 0;
     int selection_end = -1;
 };
@@ -627,29 +633,13 @@ struct WaLineEdit
             
             data->text_transient = data->text;
             
-            if (*text == '\x7F' || *text == '\x08')
-            { 
-                if (data->selection_end > data->cursor)
-                    data->text_transient.erase(data->cursor, data->selection_end - data->cursor);
-                // delete key
-                else if (*text == '\x7F' and (size_t)data->cursor < data->text.size())
-                    data->text_transient.erase(data->cursor, 1);
-                // backspace key
-                else if (*text == '\x08' and data->cursor > 0)
-                {
-                    data->text_transient.erase(data->cursor - 1, 1);
-                    data->cursor -= 1;
-                }
-            }
-            else
-            {
-                if (data->selection_end > data->cursor)
-                    data->text_transient.erase(data->cursor, data->selection_end - data->cursor);
-                
-                data->text_transient.insert(data->cursor, text);
-            }
+            if (data->selection_end > data->cursor)
+                data->text_transient.erase(data->cursor, data->selection_end - data->cursor);
             
-            data->selection_end = -1;
+            data->text_transient.insert(data->cursor, text);
+            
+            data->transient_length = strlen(text);
+            
             return true;
         }
         if (event.type == WaEvent::TEXT)
@@ -687,6 +677,7 @@ struct WaLineEdit
             
             data->selection_end = -1;
             data->text_transient = data->text;
+            data->transient_length = 0;
             
             return true;
         }
@@ -697,7 +688,7 @@ struct WaLineEdit
         ui->render_ninepatch(api, ui->micro_bg_texture, {{0, 0}, control->rect.size}, {{1, 1}, {5, 5}}, {{2.5, 2.5}, {1, 1}}, {micro_bg_width, micro_bg_height}, Color::OFFWHITE);
         
         auto data = control->type_info.get_data<WaLineEditData>();
-        auto str = data->text.data();
+        auto str = data->text_transient.data();
         
         auto available_size = control->rect.size;
         available_size -= control->padding.a;
@@ -708,17 +699,27 @@ struct WaLineEdit
         auto pad = (available_size - string_size) / 2 + control->padding.a;
         pad.x = control->padding.a.x;
         
-        ui->render_string(api, pad.x, pad.y, str, control->modulate);
-        
         auto cursor_x = pad.x + ui->string_get_cursor_location(str, data->cursor);
         
+        if (data->transient_length > 0)
+        {
+            auto substring = data->text_transient.substr(data->cursor, data->transient_length);
+            auto substring_size = Vec2{ui->string_get_width(substring.data()), ui->string_get_height(substring.data())};
+            auto rect = Rect2{{cursor_x - 1, pad.y}, substring_size};
+            ui->render_rect(api, rect, Color{127, 192, 255, 64});
+            ui->ime_rect_inform(api, rect);
+        }
+        
+        ui->render_string(api, pad.x, pad.y, str, control->modulate);
+        
         //ui->render_ascii_char(api, cursor_x - 4, pad.y, '|', control->modulate);
-        ui->render_rect(api, {{cursor_x - 1, pad.y}, {1, 13}}, control->modulate);
+        ui->render_rect(api, {{cursor_x - 1, pad.y}, {1, 12}}, control->modulate);
+        
     }
     static Vec2 get_min_size(WaControl * control, WaUI * ui)
     {
         auto data = control->type_info.get_data<WaLineEditData>();
-        auto str = data->text.data();
+        auto str = data->text_transient.data();
         
         auto string_size = Vec2{ui->string_get_width(str), ui->string_get_height(str)};
         string_size += control->padding.a;
@@ -1357,17 +1358,24 @@ void WaUI::render_ninepatch(WaRenderAPI * api, uint64_t texture, Rect2 dest, Rec
     }
 }
 
-void WaUI::render_rect(WaRenderAPI * api, Rect2 dest, Color color)
+void WaUI::render_rect(WaRenderAPI * api, Rect2 rect, Color color)
 {
-    dest.pos += rect_offset;
+    rect.pos += rect_offset;
     
     if (px_snapped_rendering)
-        dest = dest.round();
+        rect = rect.round();
     
     api->draw_rect(userdata,
-        dest.pos.x, dest.pos.y, dest.size.x, dest.size.y,
+        rect.pos.x, rect.pos.y, rect.size.x, rect.size.y,
         color.r, color.g, color.b, color.a
     );
+}
+
+void WaUI::ime_rect_inform(WaRenderAPI * api, Rect2 rect)
+{
+    rect.pos += rect_offset;
+    rect = rect.round();
+    api->ime_rect_inform(userdata, rect.pos.x, rect.pos.y, rect.size.x, rect.size.y);
 }
 
 void feed_event_to_ui(SDL_Event event, WaUI & ui)
@@ -1550,6 +1558,19 @@ int main()
         SDL_RenderSetClipRect(renderer, nullptr);
     };
     
+    auto sdl_ime_rect_inform = [](void * userdata, float x, float y, float w, float h)
+    {
+        SDL_Rect rect;
+        rect.x = (int)x;
+        rect.y = (int)y;
+        rect.w = (int)w;
+        rect.h = (int)h;
+        if (rect.w * rect.h > 0)
+            SDL_SetTextInputRect(&rect);
+        else
+            SDL_SetTextInputRect(nullptr);
+    };
+    
     auto sdl_texture_create = [](void * userdata, uint32_t w, uint32_t h, bool filter, const unsigned char * data)
     {
         auto context = (CallbackContext *) userdata;
@@ -1586,6 +1607,7 @@ int main()
     api.draw_texture_rect = sdl_draw_texture_rect;
     api.draw_clip_rect_set = sdl_clip_rect_set;
     api.draw_clip_rect_clear = sdl_clip_rect_clear;
+    api.ime_rect_inform = sdl_ime_rect_inform;
     api.texture_create = sdl_texture_create;
     api.texture_destroy = sdl_texture_destroy;
     
