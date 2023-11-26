@@ -16,6 +16,12 @@ else()
     add_compile_options(-Wall -Wextra -pedantic -Wno-unused-parameter -fdiagnostics-color=always)
 endif()
 
-add_executable(${PROJECT_NAME} src/main.cpp)
+add_executable(${PROJECT_NAME} WIN32 src/main.cpp)
+
+if (MSVC)
+    target_link_options(${PROJECT_NAME} PRIVATE /ENTRY:mainCRTStartup)
+endif()
+
 target_link_libraries(${PROJECT_NAME} PRIVATE SDL2::SDL2-static)
+
 add_definitions(-DSDL_MAIN_HANDLED)

@@ -117,6 +117,11 @@ struct Vec2
         return *this;
     }
     
+    bool operator==(const Vec2& other) const
+    {
+        return x == other.x and y == other.y;
+    }
+    
     Vec2 lerp(const Vec2& other, const Vec2& t) const
     {
         return Vec2 {
@@ -178,6 +183,10 @@ struct Rect2
     {
         auto end = get_end();
         return point.x >= pos.x && point.x <= end.x && point.y >= pos.y && point.y <= end.y;
+    }
+    bool operator==(const Rect2& other) const
+    {
+        return pos == other.pos and size == other.size;
     }
 };
 
@@ -244,6 +253,8 @@ struct WaEvent
         MOUSE_BUTTON_RELEASED,
         TEXT,
         TEXTEDIT,
+        FOCUS, // Synthesized by the WaUI object. Do not costruct yourself.
+        DEFOCUS, // Synthesized by the WaUI object. Do not costruct yourself.
     };
     enum Action
     {
@@ -403,6 +414,8 @@ struct WaControl
     bool mouse_to_children = true;
     bool clip_children = true;
     
+    bool focused = false;
+    
     WaControlAPI type_info;
     std::vector<uint64_t> children;
     
@@ -472,7 +485,7 @@ struct WaUI
     float string_get_width(const char * string);
     float string_get_cursor_location(const char * string, int cursor);
     
-    void ime_rect_inform(WaRenderAPI * api, Rect2 dest);
+    void ime_rect_inform(Rect2 dest);
     
     void render_string(WaRenderAPI * api, float x, float y, const char * string, Color color);
     void render_ascii_char(WaRenderAPI * api, float x, float y, uint8_t c, Color color);
@@ -486,11 +499,16 @@ struct WaUI
     uint64_t micro_bg_texture = 0;
     uint64_t font_texture = 0;
     
+    uint64_t focus_control_get();
+    void focus_control_set(uint64_t new_control);
+    
 protected:
     uint64_t clicked_control = 0;
     uint64_t clicked_control_count = 0;
     
 private:
+    uint64_t focused_control = 0;
+    
     template<typename T>
     uint64_t control_type_add_basis(const char * name);
     
@@ -503,6 +521,9 @@ private:
     
     Vec2 rect_offset;
     Rect2 last_clip_rect;
+    
+    Rect2 ime_rect;
+    Rect2 ime_rect_prev;
     
     uint64_t next_type_id = 1;
     std::unordered_map<uint64_t, WaControlAPI> control_types;
@@ -614,6 +635,13 @@ struct WaLineEdit
     static bool handle_event(WaControl * control, WaUI * ui, WaEvent event, Vec2 pos_offset)
     {
         auto data = control->type_info.get_data<WaLineEditData>();
+        
+        if (event.type == WaEvent::DEFOCUS)
+        {
+            data->transient_length = 0;
+            data->text = data->text_transient;
+            return false;
+        }
         if (event.type == WaEvent::ACTION)
         {
             if (event.subtype == WaEvent::Action::LEFT)
@@ -623,8 +651,8 @@ struct WaLineEdit
         }
         if (event.type == WaEvent::TEXTEDIT)
         {
-            puts("got text edit");
             auto text = (const char *) event.ptr_data;
+            printf("got text edit... `%s`\n", text);
             
             if (*text == '\x09') // horizontal tab
                 text = " ";
@@ -644,6 +672,7 @@ struct WaLineEdit
         }
         if (event.type == WaEvent::TEXT)
         {
+            //data->text = data->text_transient;
             puts("got text");
             auto text = (const char *) event.ptr_data;
             
@@ -707,13 +736,19 @@ struct WaLineEdit
             auto substring_size = Vec2{ui->string_get_width(substring.data()), ui->string_get_height(substring.data())};
             auto rect = Rect2{{cursor_x - 1, pad.y}, substring_size};
             ui->render_rect(api, rect, Color{127, 192, 255, 64});
-            ui->ime_rect_inform(api, rect);
+            ui->ime_rect_inform(rect);
+        }
+        else
+        {
+            if (control->focused)
+                ui->ime_rect_inform({pad, {1, 1}});
         }
         
         ui->render_string(api, pad.x, pad.y, str, control->modulate);
         
         //ui->render_ascii_char(api, cursor_x - 4, pad.y, '|', control->modulate);
-        ui->render_rect(api, {{cursor_x - 1, pad.y}, {1, 12}}, control->modulate);
+        if (control->focused)
+            ui->render_rect(api, {{cursor_x - 1, pad.y}, {1, 12}}, control->modulate);
         
     }
     static Vec2 get_min_size(WaControl * control, WaUI * ui)
@@ -724,7 +759,7 @@ struct WaLineEdit
         auto string_size = Vec2{ui->string_get_width(str), ui->string_get_height(str)};
         string_size += control->padding.a;
         string_size += control->padding.b;
-        string_size.x = std::max(64.0f, string_size.x);
+        string_size.x = std::max(128.0f, string_size.x);
         return string_size;
     }
     static void signal_destruct(WaControl * control, WaUI * ui, WaSignal * signal)
@@ -819,7 +854,8 @@ bool WaControl::handle_event(WaUI * ui, WaEvent event, Vec2 pos_offset)
                 may_handle = false;
                 return false;
             }
-            //printf("Press detected on control %lld\n", id);
+            ui->focus_control_set(id);
+            printf("focusing %d\n", id);
             ui->clicked_control_count += 1;
             ui->clicked_control = id;
             return true;
@@ -828,23 +864,21 @@ bool WaControl::handle_event(WaUI * ui, WaEvent event, Vec2 pos_offset)
         {
             may_handle = ui->clicked_control == id;
             // return may_handle; // FIXME: might fix a bug but haven't found the bug yet
-            
             if (!global_rect.contains_point({event.x, event.y}))
             {
-                if (ui->clicked_control == id)
-                {
-                    //printf("release detected off of control %lld\n", id);
-                    return true;
-                }
-                else
-                    return false;
+                return ui->clicked_control == id;
             }
-            //printf("release detected on control %lld\n", id);
             return true;
         }
         
         return false;
     }();
+    
+    if (event.type == WaEvent::DEFOCUS)
+        focused = false;
+    if (event.type == WaEvent::FOCUS)
+        focused = true;
+    
     if (may_handle and type_info.handle_event)
         ret |= type_info.handle_event(this, ui, event, pos_offset);
     
@@ -1093,6 +1127,10 @@ void WaUI::think(uint64_t delta)
 void WaUI::render_scene(WaRenderAPI * api)
 {
     api->draw_begin_frame(userdata);
+    
+    if (ime_rect != ime_rect_prev)
+        api->ime_rect_inform(userdata, ime_rect.pos.x, ime_rect.pos.y, ime_rect.size.x, ime_rect.size.y);
+    ime_rect_prev = ime_rect;
     
     rect_offset = {0, 0};
     
@@ -1371,11 +1409,30 @@ void WaUI::render_rect(WaRenderAPI * api, Rect2 rect, Color color)
     );
 }
 
-void WaUI::ime_rect_inform(WaRenderAPI * api, Rect2 rect)
+void WaUI::ime_rect_inform(Rect2 rect)
 {
     rect.pos += rect_offset;
     rect = rect.round();
-    api->ime_rect_inform(userdata, rect.pos.x, rect.pos.y, rect.size.x, rect.size.y);
+    ime_rect = rect;
+}
+
+uint64_t WaUI::focus_control_get()
+{
+    return focused_control;
+}
+void WaUI::focus_control_set(uint64_t new_control)
+{
+    if (focused_control == new_control)
+        return;
+    
+    if (focused_control != 0 and controls.count(focused_control) != 0)
+        controls[focused_control]->handle_event(this, WaEvent{WaEvent::Type::DEFOCUS}, {0, 0});
+    
+    ime_rect_inform({{0, 0}, {0, 0}});
+    printf("%f %f\n", ime_rect.size.x, ime_rect.size.y);
+    
+    focused_control = new_control;
+    controls[focused_control]->handle_event(this, WaEvent{WaEvent::Type::FOCUS}, {0, 0});
 }
 
 void feed_event_to_ui(SDL_Event event, WaUI & ui)
@@ -1426,19 +1483,20 @@ void feed_event_to_ui(SDL_Event event, WaUI & ui)
     }
     else if (event.type == SDL_TEXTEDITING)
     {
-        auto wa_event = WaEvent{WaEvent::Type::TEXTEDIT, 0, 0, 0, 0, 0};
+        auto wa_event = WaEvent{WaEvent::Type::TEXTEDIT};
         wa_event.ptr_data = event.edit.text;
         ui.feed_event(wa_event);
         
-        printf("text edit: %s\n", event.edit.text);
+        printf("text edit: `%s` %d %d\n", event.edit.text, event.edit.start, event.edit.length);
     }
     else if (event.type == SDL_TEXTEDITING_EXT)
     {
-        auto wa_event = WaEvent{WaEvent::Type::TEXTEDIT, 0, 0, 0, 0, 0};
+        auto wa_event = WaEvent{WaEvent::Type::TEXTEDIT};
         wa_event.ptr_data = event.editExt.text;
         ui.feed_event(wa_event);
         
-        printf("text edit extended: %s\n", event.editExt.text);
+        printf("text edit extended: `%s` %d %d\n", event.editExt.text, event.editExt.start, event.editExt.length);
+        //printf("text edit extended: %s\n", event.editExt.text);
         SDL_free(event.editExt.text);
     }
     else if (event.type == SDL_TEXTINPUT)
@@ -1447,21 +1505,27 @@ void feed_event_to_ui(SDL_Event event, WaUI & ui)
         wa_event.ptr_data = event.edit.text;
         ui.feed_event(wa_event);
         
-        printf("text input: %s\n", event.text.text);
+        //printf("text input: %s\n", event.text.text);
     }
 }
 
 struct CallbackContext
 {
     SDL_Renderer * renderer;
+    bool ime_started = false;
     std::unordered_map<uint64_t, SDL_Texture *> textures;
     uint64_t next_id = 1;
 };
 
 int main()
 {
+    setbuf(stdout, nullptr);
+    
     if (SDL_Init(SDL_INIT_EVERYTHING) != 0)
         return fprintf(stderr, "failed to initialize SDL"), -1;
+    
+    SDL_SetHint(SDL_HINT_IME_SHOW_UI, "1");
+    SDL_SetHint(SDL_HINT_IME_SUPPORT_EXTENDED_TEXT, "1");
     
     auto window = SDL_CreateWindow("WaUI Demo", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, 800, 600, SDL_WINDOW_SHOWN);
     if (!window)
@@ -1472,9 +1536,6 @@ int main()
     auto renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED);
     if (!renderer)
         return fprintf(stderr, "failed to open SDL renderer"), -1;
-    
-    SDL_SetHint(SDL_HINT_IME_SHOW_UI, "1");
-    SDL_SetHint(SDL_HINT_IME_SUPPORT_EXTENDED_TEXT, "1");
     
     auto ui = WaUI();
     
@@ -1560,15 +1621,35 @@ int main()
     
     auto sdl_ime_rect_inform = [](void * userdata, float x, float y, float w, float h)
     {
+        auto context = (CallbackContext *) userdata;
+        
         SDL_Rect rect;
         rect.x = (int)x;
         rect.y = (int)y;
         rect.w = (int)w;
         rect.h = (int)h;
         if (rect.w * rect.h > 0)
+        {
             SDL_SetTextInputRect(&rect);
+            if (!context->ime_started)
+            {
+                SDL_StartTextInput();
+                puts("called SDL_StartTextInput");
+            }
+            context->ime_started = true;
+            printf("setting ime rect to %d %d %d %d\n", rect.x, rect.y, rect.w, rect.h);
+        }
         else
+        {
             SDL_SetTextInputRect(nullptr);
+            if (context->ime_started)
+            {
+                SDL_StopTextInput();
+                puts("called SDL_StopTextInput");
+            }
+            context->ime_started = false;
+            puts("clearing ime rect");
+        }
     };
     
     auto sdl_texture_create = [](void * userdata, uint32_t w, uint32_t h, bool filter, const unsigned char * data)
