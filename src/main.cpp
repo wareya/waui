@@ -21,12 +21,13 @@ TODO:
 - dropdown menu
 - label with line wrapping
 - single-line text input 
-- multi-line text input
 - slider input
 - number input
 - knob input
 
 - cached min size calculation
+
+- multi-line text input (as an extension)
 
 - text shaping callback system
 */
@@ -440,6 +441,27 @@ struct WaControl
     void signal_destruct(WaUI * ui, WaSignal * signal);
 };
 
+size_t substr_len_utf8(const std::string & str, size_t start, size_t count)
+{
+    size_t i = start;
+    size_t n = 0;
+    while (n <= count and i < str.size())
+    {
+        auto c = str[i];
+        // single-byte character
+        if ((c & 0x80) == 0)
+            n += 1;
+        // first byte of multibyte
+        else if ((c & 0xC0) != 0x80)
+            n += 1;
+        // otherwise continuation byte; just continue
+        
+        if (n <= count)
+            i += 1;
+    }
+    return i - start;
+}
+
 struct WaUI
 {
     friend WaControl;
@@ -613,6 +635,9 @@ struct WaLineEditData
     int transient_length = 0;
     int cursor = 0;
     int selection_end = -1;
+    
+    int ime_cursor = 0;
+    int ime_selection_end = -1;
 };
 struct WaLineEdit
 {
@@ -667,6 +692,9 @@ struct WaLineEdit
             data->text_transient.insert(data->cursor, text);
             
             data->transient_length = strlen(text);
+            
+            data->ime_cursor = (int)event.x;
+            data->ime_selection_end = (int)event.y;
             
             return true;
         }
@@ -735,8 +763,21 @@ struct WaLineEdit
             auto substring = data->text_transient.substr(data->cursor, data->transient_length);
             auto substring_size = Vec2{ui->string_get_width(substring.data()), ui->string_get_height(substring.data())};
             auto rect = Rect2{{cursor_x - 1, pad.y}, substring_size};
-            ui->render_rect(api, rect, Color{127, 192, 255, 64});
-            ui->ime_rect_inform(rect);
+            auto rect2 = rect;
+            
+            auto bytes = substr_len_utf8(substring, 0, data->ime_cursor);
+            printf("%d\n", bytes);
+            auto substring2 = substring.substr(0, bytes);
+            cursor_x += ui->string_get_width(substring2.data());
+            
+            rect.pos.y += rect.size.y - 2;
+            rect.size.y = 2;
+            ui->render_rect(api, rect, Color{127, 160, 192, 128});
+            //ui->render_rect(api, rect, Color{127, 192, 255, 64});
+            
+            rect2.size.y += 1;
+            
+            ui->ime_rect_inform(rect2);
         }
         else
         {
@@ -1484,6 +1525,8 @@ void feed_event_to_ui(SDL_Event event, WaUI & ui)
     else if (event.type == SDL_TEXTEDITING)
     {
         auto wa_event = WaEvent{WaEvent::Type::TEXTEDIT};
+        wa_event.x = event.edit.start;
+        wa_event.y = event.edit.length;
         wa_event.ptr_data = event.edit.text;
         ui.feed_event(wa_event);
         
@@ -1492,6 +1535,8 @@ void feed_event_to_ui(SDL_Event event, WaUI & ui)
     else if (event.type == SDL_TEXTEDITING_EXT)
     {
         auto wa_event = WaEvent{WaEvent::Type::TEXTEDIT};
+        wa_event.x = event.editExt.start;
+        wa_event.y = event.editExt.length;
         wa_event.ptr_data = event.editExt.text;
         ui.feed_event(wa_event);
         
