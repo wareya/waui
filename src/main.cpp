@@ -35,6 +35,29 @@ TODO:
 #include <SDL.h>
 
 #include "images.h"
+#include "unifont.h"
+
+/*
+const int font_char_w = 7;
+const int font_char_h = 13;
+const int font_cols = 32;
+const int font_rows = 8;
+const int font_bits = 8;
+
+#define font_w font_image_width
+#define font_h font_image_height
+#define font_i font_image
+*/
+
+const int font_char_w = 16;
+const int font_char_h = 16;
+const int font_cols = 256;
+const int font_rows = 256;
+const int font_bits = 32;
+
+#define font_w unifont_width
+#define font_h unifont_height
+#define font_i unifont
 
 #define USE_GEOMETRY_FOR_NINEPATCH 1
 
@@ -268,6 +291,10 @@ struct WaEvent
         PREV, // e.g. shift-tab
         NEXT_ALT, // e.g. ctrl-tab
         PREV_ALT, // e.g. ctrl-shift-tab
+        HOME, // e.g. same keyboard key
+        END, // e.g. same keyboard key
+        HOME_ALT, // e.g. same keyboard key but also with ctrl
+        END_ALT, // e.g. same keyboard key but also with ctrl
         PGUP,
         PGDN,
         CONFIRM,
@@ -441,6 +468,57 @@ struct WaControl
     void signal_destruct(WaUI * ui, WaSignal * signal);
 };
 
+// assumes that the text is valid utf-8
+uint32_t next_codepoint_utf8(const char * & str)
+{
+    if (*str == 0)
+        return 0;
+    
+    auto ret = 0;
+    uint8_t c = *str++;
+    if ((c & 0x80) == 0)
+        ret = c;
+    else if((c & 0xE0) == 0xC0)
+    {
+        ret = ((uint32_t) c & 0x1F);
+        ret = (ret << 6) | (*str++ & 0x3F);
+    }
+    else if((c & 0xF0) == 0xE0)
+    {
+        ret = ((uint32_t) c & 0x0F);
+        ret = (ret << 6) | (*str++ & 0x3F);
+        ret = (ret << 6) | (*str++ & 0x3F);
+    }
+    else if((c & 0xF8) == 0xF0)
+    {
+        ret = ((uint32_t) c & 0x07);
+        ret = (ret << 6) | (*str++ & 0x3F);
+        ret = (ret << 6) | (*str++ & 0x3F);
+        ret = (ret << 6) | (*str++ & 0x3F);
+    }
+    
+    return ret;
+}
+int next_pos_utf8(const char * str, int pos)
+{
+    if (*str == 0)
+        return 0;
+    pos++;
+    while (str[pos] != 0 and (str[pos] & 0xC0) == 0x80)
+        pos++;
+    return pos;
+}
+int prev_pos_utf8(const char * str, int pos)
+{
+    if (*str == 0 or pos == 0)
+        return 0;
+    pos--;
+    while (str[pos] != 0 and (str[pos] & 0xC0) == 0x80 and pos > 0)
+        pos--;
+    return pos;
+}
+
+// assumes that the text is valid utf-8
 size_t substr_len_utf8(const std::string & str, size_t start, size_t count)
 {
     size_t i = start;
@@ -510,7 +588,7 @@ struct WaUI
     void ime_rect_inform(Rect2 dest);
     
     void render_string(WaRenderAPI * api, float x, float y, const char * string, Color color);
-    void render_ascii_char(WaRenderAPI * api, float x, float y, uint8_t c, Color color);
+    void render_char(WaRenderAPI * api, float x, float y, uint32_t c, Color color);
     void render_rect(WaRenderAPI * api, Rect2 dest, Color color);
     void render_ninepatch(WaRenderAPI * api, uint64_t texture, Rect2 dest, Rect2 src_outer, Rect2 src_inner, Vec2 texture_size, Color color);
     
@@ -669,10 +747,19 @@ struct WaLineEdit
         }
         if (event.type == WaEvent::ACTION)
         {
-            if (event.subtype == WaEvent::Action::LEFT)
-                data->cursor = std::clamp(data->cursor - 1, 0, (int)data->text.size());
-            if (event.subtype == WaEvent::Action::RIGHT)
-                data->cursor = std::clamp(data->cursor + 1, 0, (int)data->text.size());
+            if (data->text_transient.size() > 0)
+            {
+                auto text = data->text_transient.data();
+                
+                if (event.subtype == WaEvent::Action::LEFT)
+                    data->cursor = std::clamp(prev_pos_utf8(text, data->cursor), 0, (int)data->text.size());
+                else if (event.subtype == WaEvent::Action::RIGHT)
+                    data->cursor = std::clamp(next_pos_utf8(text, data->cursor), 0, (int)data->text.size());
+                else if (event.subtype == WaEvent::Action::HOME)
+                    data->cursor = 0;
+                else if (event.subtype == WaEvent::Action::END)
+                    data->cursor = (int)data->text.size();
+            }
         }
         if (event.type == WaEvent::TEXTEDIT)
         {
@@ -715,12 +802,16 @@ struct WaLineEdit
                     data->text.erase(data->cursor, data->selection_end - data->cursor);
                 // delete key
                 else if (*text == '\x7F' and (size_t)data->cursor < data->text.size())
-                    data->text.erase(data->cursor, 1);
+                {
+                    auto next = std::clamp(next_pos_utf8(data->text.data(), data->cursor), 0, (int)data->text.size());
+                    data->text.erase(data->cursor, next - data->cursor);
+                }
                 // backspace key
                 else if (*text == '\x08' and data->cursor > 0)
                 {
-                    data->text.erase(data->cursor - 1, 1);
-                    data->cursor -= 1;
+                    auto prev = std::clamp(prev_pos_utf8(data->text.data(), data->cursor), 0, (int)data->text.size());
+                    data->text.erase(prev, data->cursor - prev);
+                    data->cursor = prev;
                 }
             }
             else
@@ -765,8 +856,8 @@ struct WaLineEdit
             auto rect = Rect2{{cursor_x - 1, pad.y}, substring_size};
             auto rect2 = rect;
             
+            //printf("%d\n", bytes);
             auto bytes = substr_len_utf8(substring, 0, data->ime_cursor);
-            printf("%d\n", bytes);
             auto substring2 = substring.substr(0, bytes);
             cursor_x += ui->string_get_width(substring2.data());
             
@@ -787,9 +878,8 @@ struct WaLineEdit
         
         ui->render_string(api, pad.x, pad.y, str, control->modulate);
         
-        //ui->render_ascii_char(api, cursor_x - 4, pad.y, '|', control->modulate);
         if (control->focused)
-            ui->render_rect(api, {{cursor_x - 1, pad.y}, {1, 12}}, control->modulate);
+            ui->render_rect(api, {{cursor_x - 1, pad.y}, {1, ui->string_get_height("|")}}, control->modulate);
         
     }
     static Vec2 get_min_size(WaControl * control, WaUI * ui)
@@ -1241,38 +1331,38 @@ void WaUI::init(WaRenderAPI * api)
     panel_texture = api->texture_create(userdata, panel_image_width, panel_image_height, true, panel_image);
     micro_bg_texture = api->texture_create(userdata, micro_bg_width, micro_bg_height, true, micro_bg_image);
     
-    auto font_data = (unsigned char *)malloc(font_image_width * font_image_height * 4);
+    auto font_data = (unsigned char *)malloc(font_w * font_h * 4);
     auto i = 0;
     auto j = 0;
     auto bit = 0;
-    for (unsigned long int y = 0; y < font_image_height; y++)
+    for (unsigned long int y = 0; y < font_h; y++)
     {
-        for (unsigned long int x = 0; x < font_image_width; x++)
+        for (unsigned long int x = 0; x < font_w; x++)
         {
             font_data[i++] = 255;
             font_data[i++] = 255;
             font_data[i++] = 255;
-            font_data[i++] = ((font_image[j] >> (7 - bit)) & 1) ? 255 : 0;
+            font_data[i++] = ((font_i[j] >> ((font_bits - 1) - bit)) & 1) ? 255 : 0;
             bit += 1;
-            if (bit >= 8)
+            if (bit >= font_bits)
             {
-                bit -= 8;
+                bit -= font_bits;
                 j += 1;
             }
         }
     }
     
-    for (uint32_t y0 = 0; y0 < 8*13; y0 += 13)
+    for (uint32_t y0 = 0; y0 < font_rows*font_char_h; y0 += font_char_h)
     {
-        for (uint32_t x0 = 0; x0 < 32*7; x0 += 7)
+        for (uint32_t x0 = 0; x0 < font_cols*font_char_w; x0 += font_char_w)
         {
-            int32_t left = 7;
+            int32_t left = font_char_w;
             int32_t right = 0;
-            for (uint32_t y = y0; y < y0 + 13; y += 1)
+            for (uint32_t y = y0; y < y0 + font_char_h; y += 1)
             {
-                for (uint32_t x = x0; x < x0 + 7; x += 1)
+                for (uint32_t x = x0; x < x0 + font_char_w; x += 1)
                 {
-                    size_t index = (y * font_image_width + x) * 4 + 3;
+                    size_t index = (y * font_w + x) * 4 + 3;
                     auto c = font_data[index];
                     if (c > 127)
                     {
@@ -1295,7 +1385,7 @@ void WaUI::init(WaRenderAPI * api)
         }
     }
     
-    font_texture = api->texture_create(userdata, font_image_width, font_image_height, true, font_data);
+    font_texture = api->texture_create(userdata, font_w, font_h, true, font_data);
     free(font_data);
     
     control_type_add_basis<WaList>("List");
@@ -1313,41 +1403,51 @@ void WaUI::clean_up(WaRenderAPI * api)
 };
 float WaUI::string_get_height(const char * string)
 {
-    return 13;
+    return font_char_h;
 }
 float WaUI::string_get_width(const char * string)
 {
-    auto n = 1;
+    auto n = 0;
     while (*string != 0)
     {
-        n += font_advance[(uint8_t)*string];
-        string += 1;
+        auto c = next_codepoint_utf8(string);
+        n += font_advance[c];
+        if (c == 0)
+            break;
     }
     return n;
 }
 float WaUI::string_get_cursor_location(const char * string, int cursor)
 {
-    auto n = 1;
+    auto n = 0;
     while (*string != 0 and cursor > 0)
     {
-        n += font_advance[(uint8_t)*string];
-        string += 1;
-        cursor -= 1;
+        auto old_string = string;
+        auto c = next_codepoint_utf8(string);
+        n += font_advance[c];
+        cursor -= string - old_string;
+        if (c == 0)
+            break;
     }
     return n;
 }
 void WaUI::render_string(WaRenderAPI * api, float x, float y, const char * string, Color color)
 {
-    x += 1;
+    x += 0;
     while (*string != 0)
     {
-        auto offset = font_offset[(uint8_t)*string];
-        render_ascii_char(api, x - offset, y, *string, color);
-        x += font_advance[(uint8_t)*string];
-        string += 1;
+        //render_ascii_char(api, x - offset, y, *string, color);
+        //x += font_advance[(uint8_t)*string];
+        //string += 1;
+        auto c = next_codepoint_utf8(string);
+        if (c == 0)
+            break;
+        auto offset = font_offset[c];
+        render_char(api, x - offset, y, c, color);
+        x += font_advance[c];
     }
 }
-void WaUI::render_ascii_char(WaRenderAPI * api, float x, float y, uint8_t c, Color color)
+void WaUI::render_char(WaRenderAPI * api, float x, float y, uint32_t c, Color color)
 {
     x += rect_offset.x;
     y += rect_offset.y;
@@ -1357,13 +1457,13 @@ void WaUI::render_ascii_char(WaRenderAPI * api, float x, float y, uint8_t c, Col
         y = round(y);
     }
     
-    float c_x = (c % 32) * 7;
-    float c_y = (c / 32) * 13;
+    float c_x = (c % font_cols) * font_char_w;
+    float c_y = (c / font_cols) * font_char_h;
     api->draw_texture_rect(userdata,
-        x, y, 7, 13,
+        x, y, font_char_w, font_char_h,
         color.r, color.g, color.b, color.a,
-        font_texture, c_x, c_y, 7, 13,
-        font_image_width, font_image_height
+        font_texture, c_x, c_y, font_char_w, font_char_h,
+        font_w, font_h
     );
 }
 
@@ -1505,6 +1605,12 @@ void feed_event_to_ui(SDL_Event event, WaUI & ui)
             break;
         case SDLK_RIGHT:
             wa_event.subtype = WaEvent::Action::RIGHT;
+            break;
+        case SDLK_HOME:
+            wa_event.subtype = WaEvent::Action::HOME;
+            break;
+        case SDLK_END:
+            wa_event.subtype = WaEvent::Action::END;
             break;
         case SDLK_BACKSPACE:
             ui.feed_event(WaEvent{WaEvent::Type::TEXT, 0, 0, 0, 0, "\x08"});
