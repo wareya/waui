@@ -866,6 +866,9 @@ struct WaLineEdit
                 case WaEvent::Action::PASTE:
                     if (len > 0 and data->selection_end >= 0)
                         data->text.erase(start, len);
+                    if (data->selection_end >= 0)
+                        data->cursor = start;
+                    data->cursor = std::min(data->cursor, (int)data->text.size());
                     
                     // FIXME userdata abstraction leakage...?
                     auto text_c = ui->sys_api.clipboard_text_get(ui->userdata);
@@ -876,7 +879,6 @@ struct WaLineEdit
                     data->text.insert(data->cursor, text);
                     
                     data->cursor += text.size();
-                    data->cursor = std::min(data->cursor, (int)data->text.size());
                     data->selection_end = -1;
                     break;
                 }
