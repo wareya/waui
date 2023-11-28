@@ -1,3 +1,27 @@
+/*
+TODO:
+- grid container (true and stretchy)
+- scrolling container
+- tab container
+
+- checkbox/radio buttons
+- dropdown menu
+- label with line wrapping
+- single-line text input 
+- slider input
+- number input
+- knob input
+
+- lineedit selection, click-to-move-cursor
+- lineedit copy/paste
+
+- cached min size calculation
+
+- multi-line text input (as an extension)
+
+- text shaping callback system
+*/
+
 #include <algorithm>
 #include <memory>
 #include <cstdint>
@@ -239,51 +263,93 @@ struct WaRenderAPI
     void (*texture_destroy)(void * userdata, uint32_t texture_id);
 };
 
+struct WaSystemAPI
+{
+    WaSystemAPI()
+    {
+        clipboard_text_get = nullptr;
+        clipboard_text_free = nullptr;
+        clipboard_text_set = nullptr;
+    }
+    
+    // The UI system will attempt to free the returned string by subsequently calling clipboard_text_free().
+    char * (*clipboard_text_get)(void * userdata);
+    // Frees the string returned by the above function.
+    void (*clipboard_text_free)(void * userdata, char * text);
+    // The application does not gain ownership of the text pointer; the UI system retains ownership of it.
+    void (*clipboard_text_set)(void * userdata, const char * text);
+};
+
 struct WaEvent
 {
     enum Type
     {
-        NONE,
-        ACTION,
-        RESIZE,
-        MOUSE_POSITION,
+        NONE = 0,
+        
+        RESIZE = 0x100, // screen resize
+        
+        ACTION = 0x1000,
+        ACTION_RELEASED,
+        
+        MOUSE_POSITION = 0x2000,
         MOUSE_BUTTON_PRESSED,
         MOUSE_BUTTON_RELEASED,
-        TEXT,
+        
+        TEXT = 0x3000,
         TEXTEDIT,
-        FOCUS, // Synthesized by the WaUI object. Do not costruct yourself.
+        
+        FOCUS = 0x10000, // Synthesized by the WaUI object. Do not costruct yourself.
         DEFOCUS, // Synthesized by the WaUI object. Do not costruct yourself.
     };
     enum Action
     {
-        INVALID,
-        UP,
+        INVALID = 0,
+        
+        UP = 0x100,
         DOWN,
         LEFT,
         RIGHT,
-        NEXT, // e.g. tab
+        
+        NEXT = 0x200, // e.g. tab
         PREV, // e.g. shift-tab
         NEXT_ALT, // e.g. ctrl-tab
         PREV_ALT, // e.g. ctrl-shift-tab
-        HOME, // e.g. same keyboard key
+        
+        HOME = 0x300, // e.g. same keyboard key
         END, // e.g. same keyboard key
         HOME_ALT, // e.g. same keyboard key but also with ctrl
         END_ALT, // e.g. same keyboard key but also with ctrl
-        PGUP,
+        
+        PGUP = 0x400,
         PGDN,
-        CONFIRM,
+        
+        CONFIRM = 0x500,
         CANCEL,
-        ESCAPE,
+        
+        COPY = 0x600,
+        CUT,
+        PASTE,
+        
+        UNDO = 0x700,
+        REDO,
+        
+        SELECT_ALL = 0x800,
+        
+        ESCAPE = 0x10000,
     };
     enum Button
     {
-        M1,
-        M2,
-        M3,
-        M4,
-        M5,
-        MWHEEL_UP,
-        MWHEEL_DOWN,
+        M1 = 0,
+        M2 = 1,
+        M3 = 2,
+        M4 = 3,
+        M5 = 4,
+        MWHEEL_UP = 5,
+        MWHEEL_DOWN = 6,
+    };
+    enum ActionMod // 'or' mask into data property
+    {
+        SHIFT = 1,
     };
     
     int type = 0; // e.g. RESIZE, ACTION, MOUSE_POSITION
@@ -291,7 +357,7 @@ struct WaEvent
     
     float x = 0.0;
     float y = 0.0;
-    uint64_t data = 0; // e.g. pressed / released
+    uint64_t data = 0; // e.g. modifiers
     
     // The application is responsible for allocating and freeing this memory. WaUI will copy it, not hold onto it.
     const void * ptr_data = nullptr;
@@ -522,9 +588,11 @@ struct WaUI
     uint64_t root_control_id = 0;
     uint64_t id = 0;
     
+    WaSystemAPI sys_api;
+    
     WaUI();
     
-    void init(WaRenderAPI * api);
+    void init(WaSystemAPI sys_api, WaRenderAPI * api);
     void clean_up(WaRenderAPI * api);
     
     void render_scene(WaRenderAPI * api);
@@ -711,6 +779,9 @@ struct WaLineEdit
     }
     static bool handle_event(WaControl * control, WaUI * ui, WaEvent event, Vec2 pos_offset)
     {
+        if (!control->focused)
+            return false;
+        
         auto data = control->type_info.get_data<WaLineEditData>();
         
         if (event.type == WaEvent::DEFOCUS)
@@ -721,19 +792,98 @@ struct WaLineEdit
         }
         if (event.type == WaEvent::ACTION)
         {
-            if (data->text_transient.size() > 0)
+            if (event.subtype == WaEvent::Action::LEFT or
+                event.subtype == WaEvent::Action::RIGHT or
+                event.subtype == WaEvent::Action::HOME or
+                event.subtype == WaEvent::Action::END)
             {
-                auto text = data->text_transient.data();
-                
-                if (event.subtype == WaEvent::Action::LEFT)
-                    data->cursor = std::clamp(prev_pos_utf8(text, data->cursor), 0, (int)data->text.size());
-                else if (event.subtype == WaEvent::Action::RIGHT)
-                    data->cursor = std::clamp(next_pos_utf8(text, data->cursor), 0, (int)data->text.size());
-                else if (event.subtype == WaEvent::Action::HOME)
-                    data->cursor = 0;
-                else if (event.subtype == WaEvent::Action::END)
-                    data->cursor = (int)data->text.size();
+                if (data->text_transient.size() > 0)
+                {
+                    auto text = data->text_transient.data();
+                    
+                    auto new_cursor = data->cursor;
+                    
+                    if (event.subtype == WaEvent::Action::LEFT)
+                        new_cursor = std::clamp(prev_pos_utf8(text, new_cursor), 0, (int)data->text.size());
+                    else if (event.subtype == WaEvent::Action::RIGHT)
+                        new_cursor = std::clamp(next_pos_utf8(text, new_cursor), 0, (int)data->text.size());
+                    else if (event.subtype == WaEvent::Action::HOME)
+                        new_cursor = 0;
+                    else if (event.subtype == WaEvent::Action::END)
+                        new_cursor = (int)data->text.size();
+                    
+                    if (event.data & WaEvent::ActionMod::SHIFT)
+                    {
+                        if (data->selection_end < 0)
+                            data->selection_end = data->cursor;
+                        data->cursor = new_cursor;
+                        if (data->selection_end == data->cursor)
+                            data->selection_end = -1;
+                    }
+                    else
+                    {
+                        data->selection_end = -1;
+                        data->cursor = new_cursor;
+                    }
+                }
             }
+            if (event.subtype == WaEvent::Action::SELECT_ALL)
+            {
+                data->cursor = (int)data->text.size();
+                data->selection_end = 0;
+            }
+            if (event.subtype == WaEvent::Action::COPY
+                or event.subtype == WaEvent::Action::CUT
+                or event.subtype == WaEvent::Action::PASTE)
+            {
+                auto start = std::min(data->cursor, data->selection_end);
+                auto len = std::abs(data->selection_end - data->cursor);
+                
+                switch (event.subtype)
+                {
+                case WaEvent::Action::CUT:
+                case WaEvent::Action::COPY:
+                {
+                    if (len == 0 or data->selection_end == -1)
+                    {
+                        start = 0;
+                        len = data->text.size();
+                    }
+                    auto substr = data->text.substr(start, len);
+                    // FIXME userdata abstraction leakage...?
+                    ui->sys_api.clipboard_text_set(ui->userdata, substr.data());
+                    
+                    if (event.subtype == WaEvent::Action::COPY)
+                        break;
+                    
+                    data->text.erase(start, len);
+                    data->cursor = std::min(data->cursor, (int)data->text.size());
+                    if (data->selection_end >= 0)
+                        data->cursor = std::min(data->cursor, data->selection_end);
+                    data->selection_end = -1;
+                    break;
+                }
+                case WaEvent::Action::PASTE:
+                    if (len > 0 and data->selection_end >= 0)
+                        data->text.erase(start, len);
+                    
+                    // FIXME userdata abstraction leakage...?
+                    auto text_c = ui->sys_api.clipboard_text_get(ui->userdata);
+                    auto text = std::string(text_c);
+                    // FIXME userdata abstraction leakage...?
+                    ui->sys_api.clipboard_text_free(ui->userdata, text_c);
+                    
+                    data->text.insert(data->cursor, text);
+                    
+                    data->cursor += text.size();
+                    data->cursor = std::min(data->cursor, (int)data->text.size());
+                    data->selection_end = -1;
+                    break;
+                }
+                
+                data->text_transient = data->text;
+            }
+            
         }
         if (event.type == WaEvent::TEXTEDIT)
         {
@@ -747,8 +897,13 @@ struct WaLineEdit
             
             data->text_transient = data->text;
             
-            if (data->selection_end > data->cursor)
-                data->text_transient.erase(data->cursor, data->selection_end - data->cursor);
+            if (data->selection_end >= 0)
+            {
+                if (data->selection_end > data->cursor)
+                    data->text_transient.erase(data->cursor, data->selection_end - data->cursor);
+                else
+                    data->text_transient.erase(data->selection_end, data->cursor - data->selection_end);
+            }
             
             data->text_transient.insert(data->cursor, text);
             
@@ -761,8 +916,6 @@ struct WaLineEdit
         }
         if (event.type == WaEvent::TEXT)
         {
-            //data->text = data->text_transient;
-            puts("got text");
             auto text = (const char *) event.ptr_data;
             
             if (*text == '\x09') // horizontal tab
@@ -772,8 +925,14 @@ struct WaLineEdit
             
             if (*text == '\x7F' || *text == '\x08')
             { 
-                if (data->selection_end > data->cursor)
-                    data->text.erase(data->cursor, data->selection_end - data->cursor);
+                if (data->selection_end >= 0)
+                {
+                    if (data->selection_end > data->cursor)
+                        data->text.erase(data->cursor, data->selection_end - data->cursor);
+                    else
+                        data->text.erase(data->selection_end, data->cursor - data->selection_end);
+                    data->cursor = std::min(data->cursor, data->selection_end);
+                }
                 // delete key
                 else if (*text == '\x7F' and (size_t)data->cursor < data->text.size())
                 {
@@ -790,8 +949,14 @@ struct WaLineEdit
             }
             else
             {
-                if (data->selection_end > data->cursor)
-                    data->text.erase(data->cursor, data->selection_end - data->cursor);
+                if (data->selection_end >= 0)
+                {
+                    if (data->selection_end > data->cursor)
+                        data->text.erase(data->cursor, data->selection_end - data->cursor);
+                    else
+                        data->text.erase(data->selection_end, data->cursor - data->selection_end);
+                    data->cursor = std::min(data->cursor, data->selection_end);
+                }
                 
                 data->text.insert(data->cursor, text);
                 data->cursor += strlen(text);
@@ -850,6 +1015,15 @@ struct WaLineEdit
                 ui->ime_rect_inform({pad, {1, 1}});
         }
         
+        if (data->selection_end >= 0)
+        {
+            auto a = pad + Vec2{ui->string_get_cursor_location(str, std::min(data->cursor, data->selection_end)), 0};
+            auto b = pad + Vec2{ui->string_get_cursor_location(str, std::max(data->cursor, data->selection_end)), ui->string_get_height("|")};
+            b = b - a;
+            
+            ui->render_rect(api, {a, b}, {128, 192, 255, 64});
+        }
+        
         ui->render_string(api, pad.x, pad.y, str, control->modulate);
         
         if (control->focused)
@@ -864,7 +1038,7 @@ struct WaLineEdit
         auto string_size = Vec2{ui->string_get_width(str), ui->string_get_height(str)};
         string_size += control->padding.a;
         string_size += control->padding.b;
-        string_size.x = std::max(128.0f, string_size.x);
+        string_size.x = std::max(256.0f, string_size.x);
         return string_size;
     }
     static void signal_destruct(WaControl * control, WaUI * ui, WaSignal * signal)
@@ -962,7 +1136,7 @@ bool WaControl::handle_event(WaUI * ui, WaEvent event, Vec2 pos_offset)
                 return false;
             }
             ui->focus_control_set(id);
-            printf("focusing %d\n", id);
+            printf("focusing %lld\n", id);
             ui->clicked_control_count += 1;
             ui->clicked_control = id;
             return true;
@@ -1302,8 +1476,10 @@ const char * WaUI::control_type_get_name(uint64_t type_id)
     return nullptr;
 }
 
-void WaUI::init(WaRenderAPI * api)
+void WaUI::init(WaSystemAPI sys_api, WaRenderAPI * api)
 {
+    this->sys_api = sys_api;
+    
     test_texture = api->texture_create(userdata, test_image_width, test_image_height, true, test_image);
     panel_texture = api->texture_create(userdata, panel_image_width, panel_image_height, true, panel_image);
     micro_bg_texture = api->texture_create(userdata, micro_bg_width, micro_bg_height, true, micro_bg_image);
@@ -1350,14 +1526,12 @@ void WaUI::init(WaRenderAPI * api)
             }
             
             auto n = font_advance.size() + 1;
-            if (
-                (n >= 0x2E80 and n <= 0x30FF) or
+            if ((n >= 0x2E80 and n <= 0x30FF) or
                 (n >= 0x3130 and n <= 0x319F) or
                 (n >= 0x31C0 and n <= 0x9FFF) or
                 (n >= 0xF900 and n <= 0xFAFF) or
                 (n >= 0xFF00 and n <= 0xFF60) or
-                (n >= 0xFFE0 and n <= 0xFFE6)
-            )
+                (n >= 0xFFE0 and n <= 0xFFE6))
             {
                 left = 1;
                 right = font_char_w - 1;

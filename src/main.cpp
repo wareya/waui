@@ -1,28 +1,6 @@
 // https://jsfiddle.net/h1kmqz9f/2/
 // https://jsfiddle.net/vwoeja89/13/
 
-
-/*
-TODO:
-- grid container (true and stretchy)
-- scrolling container
-- tab container
-
-- checkbox/radio buttons
-- dropdown menu
-- label with line wrapping
-- single-line text input 
-- slider input
-- number input
-- knob input
-
-- cached min size calculation
-
-- multi-line text input (as an extension)
-
-- text shaping callback system
-*/
-
 #include <unordered_map>
 #include <cstdint>
 
@@ -43,9 +21,16 @@ void feed_event_to_ui(SDL_Event event, WaUI & ui)
         ui.feed_event(WaEvent{WaEvent::Type::MOUSE_BUTTON_PRESSED, event.button.button, (float)event.button.x, (float)event.button.y});
     else if (event.type == SDL_MOUSEBUTTONUP)
         ui.feed_event(WaEvent{WaEvent::Type::MOUSE_BUTTON_RELEASED, event.button.button, (float)event.button.x, (float)event.button.y});
-    else if (event.type == SDL_KEYDOWN)
+    else if (event.type == SDL_KEYDOWN or event.type == SDL_KEYUP)
     {
-        auto wa_event = WaEvent{WaEvent::Type::ACTION, WaEvent::Action::INVALID, 0, 0, 1};
+        auto wa_event = WaEvent{WaEvent::Type::ACTION, WaEvent::Action::INVALID};
+        if (event.type == SDL_KEYUP)
+            wa_event.type = WaEvent::Type::ACTION_RELEASED;
+        
+        auto mod = SDL_GetModState();
+        if (mod & KMOD_SHIFT)
+            wa_event.data |= WaEvent::ActionMod::SHIFT;
+        
         switch (event.key.keysym.sym)
         {
         case SDLK_UP:
@@ -67,18 +52,41 @@ void feed_event_to_ui(SDL_Event event, WaUI & ui)
             wa_event.subtype = WaEvent::Action::END;
             break;
         case SDLK_BACKSPACE:
-            ui.feed_event(WaEvent{WaEvent::Type::TEXT, 0, 0, 0, 0, "\x08"});
+            if (event.type == SDL_KEYDOWN)
+                ui.feed_event(WaEvent{WaEvent::Type::TEXT, 0, 0, 0, 0, "\x08"});
             break;
         case SDLK_TAB:
-            ui.feed_event(WaEvent{WaEvent::Type::TEXT, 0, 0, 0, 0, "\x09"});
+            if (event.type == SDL_KEYDOWN)
+                ui.feed_event(WaEvent{WaEvent::Type::TEXT, 0, 0, 0, 0, "\x09"});
             break;
         case SDLK_RETURN:
-            ui.feed_event(WaEvent{WaEvent::Type::TEXT, 0, 0, 0, 0, "\x0A"});
+            if (event.type == SDL_KEYDOWN)
+                ui.feed_event(WaEvent{WaEvent::Type::TEXT, 0, 0, 0, 0, "\x0A"});
             break;
         case SDLK_DELETE:
-            ui.feed_event(WaEvent{WaEvent::Type::TEXT, 0, 0, 0, 0, "\x7F"});
+            if (event.type == SDL_KEYDOWN)
+                ui.feed_event(WaEvent{WaEvent::Type::TEXT, 0, 0, 0, 0, "\x7F"});
             break;
         }
+        
+        if (event.key.keysym.sym == SDLK_c and (mod & KMOD_CTRL))
+            wa_event.subtype = WaEvent::Action::COPY;
+        else if (event.key.keysym.sym == SDLK_x and (mod & KMOD_CTRL))
+            wa_event.subtype = WaEvent::Action::CUT;
+        else if (event.key.keysym.sym == SDLK_v and (mod & KMOD_CTRL))
+            wa_event.subtype = WaEvent::Action::PASTE;
+        else if (event.key.keysym.sym == SDLK_v and (mod & KMOD_CTRL))
+            wa_event.subtype = WaEvent::Action::PASTE;
+        else if (event.key.keysym.sym == SDLK_a and (mod & KMOD_CTRL))
+            wa_event.subtype = WaEvent::Action::SELECT_ALL;
+        else if (event.key.keysym.sym == SDLK_z and (mod & KMOD_CTRL))
+            wa_event.subtype = WaEvent::Action::UNDO;
+        else if (event.key.keysym.sym == SDLK_y and (mod & KMOD_CTRL))
+            wa_event.subtype = WaEvent::Action::REDO;
+        
+        if (event.key.keysym.sym == SDLK_z and (mod & KMOD_CTRL) and (mod & KMOD_SHIFT))
+            wa_event.subtype = WaEvent::Action::REDO;
+        
         if (wa_event.subtype != WaEvent::Action::INVALID)
             ui.feed_event(wa_event);
     }
@@ -301,7 +309,25 @@ int main()
     api.texture_create = sdl_texture_create;
     api.texture_destroy = sdl_texture_destroy;
     
-    ui.init(&api);
+    auto sdl_clipboard_text_get = [](void * userdata) -> char *
+    {
+        return SDL_GetClipboardText();
+    };
+    auto sdl_clipboard_text_free = [](void * userdata, char * str)
+    {
+        SDL_free(str);
+    };
+    auto sdl_clipboard_text_set = [](void * userdata, const char * str)
+    {
+        SDL_SetClipboardText(str);
+    };
+    
+    auto sys_api = WaSystemAPI();
+    sys_api.clipboard_text_get = sdl_clipboard_text_get;
+    sys_api.clipboard_text_free = sdl_clipboard_text_free;
+    sys_api.clipboard_text_set = sdl_clipboard_text_set;
+    
+    ui.init(sys_api, &api);
     
     ui.get_control(ui.root_control_id)->anchor = {{0.1, 0.1}, {0.9, 0.9}};
     
