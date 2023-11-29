@@ -12,8 +12,7 @@ TODO:
 - number input
 - knob input
 
-- lineedit selection, click-to-move-cursor
-- lineedit copy/paste
+- lineedit ctrl to skip to start/end of word
 
 - cached min size calculation
 
@@ -704,7 +703,6 @@ struct WaButton
                 {},
                 nullptr
             });
-            //printf("Press detected on BUTTON %lld\n", control->id);
             return true;
         }
         if (event.type == WaEvent::MOUSE_BUTTON_RELEASED)
@@ -716,7 +714,6 @@ struct WaButton
                 {},
                 nullptr
             });
-            //printf("Release detected on BUTTON %lld\n", control->id);
             return true;
         }
         return false;
@@ -748,9 +745,16 @@ struct WaButton
     }
 };
 
+struct WaLineEdit;
+
 struct WaLineEditData
 {
+friend WaLineEdit;
     std::string text;
+    
+protected:
+    int view_offset = 0;
+    
     std::string text_transient;
     int transient_length = 0;
     int cursor = 0;
@@ -758,6 +762,8 @@ struct WaLineEditData
     
     int ime_cursor = 0;
     int ime_selection_end = -1;
+    
+    bool dragging = false;
 };
 struct WaLineEdit
 {
@@ -784,10 +790,65 @@ struct WaLineEdit
         
         auto data = control->type_info.get_data<WaLineEditData>();
         
+        if (event.type == WaEvent::MOUSE_BUTTON_RELEASED)
+        {
+            data->dragging = false;
+            return true;
+        }
+        if ((event.type == WaEvent::MOUSE_BUTTON_PRESSED or (event.type == WaEvent::MOUSE_POSITION and data->dragging)) and data->text.size() > 0)
+        {
+            auto x = event.x - pos_offset.x - control->padding.a.x; // FIXME: what is the padding doing...?
+            
+            auto best_dist = 100000;
+            auto best_c = 0;
+            auto c = 0;
+            while ((size_t)c <= data->text.size())
+            {
+                auto substring = data->text_transient.substr(0, c);
+                auto coord = ui->string_get_width(substring.data()) + control->padding.a.x - data->view_offset;
+                auto dist = std::abs(coord - x);
+                if (dist < best_dist)
+                {
+                    best_dist = dist;
+                    best_c = c;
+                }
+                auto prev_c = c;
+                c = std::clamp(next_pos_utf8(data->text.data(), c), 0, (int)data->text.size());
+                if (c == prev_c)
+                    break;
+            }
+            if (event.type == WaEvent::MOUSE_BUTTON_PRESSED)
+            {
+                data->cursor = best_c;
+                data->selection_end = -1;
+            }
+            else if (event.type == WaEvent::MOUSE_POSITION)
+            {
+                if (data->selection_end == best_c)
+                {
+                    data->selection_end = -1;
+                    data->cursor = best_c;
+                }
+                else if (data->selection_end == -1)
+                {
+                    data->selection_end = data->cursor;
+                    data->cursor = best_c;
+                }
+                else
+                {
+                    data->cursor = best_c;
+                }
+            }
+            
+            data->dragging = true;
+            
+            return true;
+        }
         if (event.type == WaEvent::DEFOCUS)
         {
             data->transient_length = 0;
             data->text = data->text_transient;
+            data->dragging = false;
             return false;
         }
         if (event.type == WaEvent::ACTION)
@@ -886,11 +947,11 @@ struct WaLineEdit
                 data->text_transient = data->text;
             }
             
+            return true;
         }
         if (event.type == WaEvent::TEXTEDIT)
         {
             auto text = (const char *) event.ptr_data;
-            printf("got text edit... `%s`\n", text);
             
             if (*text == '\x09') // horizontal tab
                 text = " ";
@@ -990,6 +1051,8 @@ struct WaLineEdit
         
         auto cursor_x = pad.x + ui->string_get_cursor_location(str, data->cursor);
         
+        auto & view_offset = data->view_offset;
+        
         if (data->transient_length > 0)
         {
             auto substring = data->text_transient.substr(data->cursor, data->transient_length);
@@ -997,22 +1060,37 @@ struct WaLineEdit
             auto rect = Rect2{{cursor_x - 1, pad.y}, substring_size};
             auto rect2 = rect;
             
-            //printf("%d\n", bytes);
             auto bytes = substr_len_utf8(substring, 0, data->ime_cursor);
             auto substring2 = substring.substr(0, bytes);
             cursor_x += ui->string_get_width(substring2.data());
             
+            // scroll to cursor
+            if (cursor_x - view_offset > available_size.x + control->padding.a.x)
+                view_offset += cursor_x - view_offset - available_size.x - control->padding.a.x;
+            if (cursor_x - view_offset < control->padding.a.x)
+                view_offset += cursor_x - view_offset - control->padding.a.x;
+            
             rect.pos.y += rect.size.y - 2;
             rect.size.y = 2;
+            rect.pos.x -= view_offset;
+            rect2.pos.x -= view_offset;
             ui->render_rect(api, rect, Color{127, 160, 192, 128});
             //ui->render_rect(api, rect, Color{127, 192, 255, 64});
             
             rect2.size.y += 1;
             
+            rect2.pos.x = std::max(0.0f, rect2.pos.x);
+            
             ui->ime_rect_inform(rect2);
         }
         else
         {
+            // scroll to cursor
+            if (cursor_x - view_offset > available_size.x + control->padding.a.x)
+                view_offset += cursor_x - view_offset - available_size.x - control->padding.a.x;
+            if (cursor_x - view_offset < control->padding.a.x)
+                view_offset += cursor_x - view_offset - control->padding.a.x;
+            
             if (control->focused)
                 ui->ime_rect_inform({pad, {1, 1}});
         }
@@ -1023,9 +1101,12 @@ struct WaLineEdit
             auto b = pad + Vec2{ui->string_get_cursor_location(str, std::max(data->cursor, data->selection_end)), ui->string_get_height("|")};
             b = b - a;
             
+            a.x -= view_offset;
             ui->render_rect(api, {a, b}, {128, 192, 255, 64});
         }
         
+        pad.x -= view_offset;
+        cursor_x -= view_offset;
         ui->render_string(api, pad.x, pad.y, str, control->modulate);
         
         if (control->focused)
@@ -1138,7 +1219,6 @@ bool WaControl::handle_event(WaUI * ui, WaEvent event, Vec2 pos_offset)
                 return false;
             }
             ui->focus_control_set(id);
-            printf("focusing %lld\n", id);
             ui->clicked_control_count += 1;
             ui->clicked_control = id;
             return true;
@@ -1276,10 +1356,7 @@ void WaUI::feed_event(WaEvent event)
         {
             clicked_control_count -= 1;
             if (clicked_control_count == 0)
-            {
-                //printf("reset clicked control... was %lld\n", clicked_control);
                 clicked_control = 0;
-            }
         }
     }
     else
@@ -1335,8 +1412,7 @@ void WaUI::control_add_child(uint64_t parent_id, uint64_t child_id)
     
     auto & parent = controls[parent_id];
     parent->children.push_back(child_id);
-    if (child->parent_id == parent_id)
-        child->parent_id = 0;
+    child->parent_id = parent_id;
 }
 void WaUI::control_remove_child(uint64_t parent_id, uint64_t child_id)
 {
@@ -1348,7 +1424,8 @@ void WaUI::control_remove_child(uint64_t parent_id, uint64_t child_id)
     auto index = parent->find_child(child_id);
     if (index >= 0)
         parent->children.erase(parent->children.begin() + index);
-    child->parent_id = parent_id;
+    if (child->parent_id == parent_id)
+        child->parent_id = 0;
 }
 uint64_t WaUI::control_get_parent(uint64_t id)
 {
@@ -1738,7 +1815,6 @@ void WaUI::focus_control_set(uint64_t new_control)
         controls[focused_control]->handle_event(this, WaEvent{WaEvent::Type::DEFOCUS}, {0, 0});
     
     ime_rect_inform({{0, 0}, {0, 0}});
-    printf("%f %f\n", ime_rect.size.x, ime_rect.size.y);
     
     focused_control = new_control;
     controls[focused_control]->handle_event(this, WaEvent{WaEvent::Type::FOCUS}, {0, 0});
