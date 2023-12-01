@@ -13,6 +13,7 @@ TODO:
 - knob input
 
 - lineedit ctrl to skip to start/end of word
+- lineedit signal
 
 - cached min size calculation
 
@@ -966,6 +967,7 @@ struct WaLineEdit
                     data->text_transient.erase(data->cursor, data->selection_end - data->cursor);
                 else
                     data->text_transient.erase(data->selection_end, data->cursor - data->selection_end);
+                data->cursor = std::min(data->cursor, data->selection_end);
             }
             
             data->text_transient.insert(data->cursor, text);
