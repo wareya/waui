@@ -269,7 +269,7 @@ int main()
         }
     };
     
-    auto sdl_texture_create = [](void * userdata, uint32_t w, uint32_t h, bool filter, const unsigned char * data)
+    auto sdl_texture_create = [](void * userdata, uint32_t w, uint32_t h, bool filter, uint8_t bpp, const unsigned char * data)
     {
         auto context = (CallbackContext *) userdata;
         auto renderer = context->renderer;
@@ -280,7 +280,11 @@ int main()
         else
             SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "0");
         
-        auto texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGBA32, SDL_TEXTUREACCESS_STATIC, w, h);
+        auto format = SDL_PIXELFORMAT_RGBA32;
+        if (bpp == 3)
+            format = SDL_PIXELFORMAT_RGB24;
+        
+        auto texture = SDL_CreateTexture(renderer, format, SDL_TEXTUREACCESS_STATIC, w, h);
         auto texture_id = context->next_id;
         context->next_id += 1;
         textures.insert({texture_id, texture});
