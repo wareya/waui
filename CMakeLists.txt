@@ -5,7 +5,7 @@ project(waui_demo)
 if (MSVC)
     add_compile_options(/W4 /WX)
 else()
-    add_compile_options(-Wall -Wextra -pedantic -Wno-unused-parameter -fdiagnostics-color=always)
+    add_compile_options(-Wall -Wextra -pedantic -Wno-unused-parameter -fdiagnostics-color=always -ggdb)
 endif()
 
 add_executable(bin2src src/res/bin2src.c)
