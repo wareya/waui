@@ -423,8 +423,6 @@ int main()
         ui.clean_up(&api);
 
         SDL_DestroyRenderer(renderer);
-        SDL_DestroyWindow(window);
-        SDL_Quit();
         
         return 0;
     }); // end of main loop thread lambda
@@ -435,6 +433,11 @@ int main()
         while (SDL_PollEvent(&event));
         SDL_Delay(1);
     }
+    
+    main_loop.join();
+    
+    SDL_DestroyWindow(window);
+    SDL_Quit();
 
     return 0;
 }
