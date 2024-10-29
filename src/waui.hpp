@@ -276,9 +276,9 @@ struct WaRenderAPI
     // The given image data might disappear immediately after this function is called.
     // The texture data is stored one pixel at a time (not a planar format).
     // Pixels are stored in row-major order, starting in the top left.
-    // bpp is the number of bytes per pixel. Each channel must be exactly 8 bits.
-    // 1 bpp : Y, 2 bpp : YA, 3 bpp : RGB, 4 bpp : RGBA
-    uint64_t (*texture_create)(void * userdata, uint32_t w, uint32_t h, bool filter, uint8_t bpp, const unsigned char * data);
+    // bytes_per_pixel is the number of bytes per pixel. Each channel must be exactly 8 bits.
+    // 1 : Y, 2 : YA, 3 : RGB, 4 : RGBA
+    uint64_t (*texture_create)(void * userdata, uint32_t w, uint32_t h, bool filter, uint8_t bytes_per_pixel, const unsigned char * data);
     
     void (*texture_destroy)(void * userdata, uint32_t texture_id);
 };
@@ -442,8 +442,7 @@ struct WaControlAPI
         {
             if (std::type_index(typeid(T)) == data_type)
                 delete (T *)data;
-            else
-                raise(SIGSEGV);
+            throw;
         }
         
         data_type = std::type_index(typeid(void));
@@ -1716,7 +1715,7 @@ void WaUI::init(WaSystemAPI sys_api, WaRenderAPI * api)
     
     test_texture = load_texture(api, "test_texture", test_png, test_png_size, nullptr);
     panel_texture = load_texture(api, "panel_texture", superpatch2_png, superpatch2_png_size, nullptr);
-    micro_bg_texture = load_texture(api, "micro_bg_texture", microninepatch2_png, microninepatch2_png_size, nullptr);
+    micro_bg_texture = load_texture(api, "micro_bg_texture", microninepatch_png, microninepatch_png_size, nullptr);
     
     WaImageData font_img_data;
     font_texture = load_texture(api, "font_texture", unifont_jp_png, unifont_jp_png_size, &font_img_data);

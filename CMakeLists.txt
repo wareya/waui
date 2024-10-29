@@ -24,12 +24,11 @@ set_property(SOURCE src/main.cpp APPEND PROPERTY OBJECT_DEPENDS ${PROJECT_SOURCE
 include_directories(${PROJECT_SOURCE_DIR}/src/generated)
 
 find_package(SDL2 REQUIRED)
-include_directories(${SDL2_INCLUDE_DIRS})
 
 #set(CMAKE_BUILD_TYPE RelWithDebInfo)
 set(CMAKE_BUILD_TYPE Debug)
 set(CMAKE_CXX_STANDARD 20)
-set(CMAKE_EXE_LINKER_FLAGS "-static-libgcc -static-libstdc++ -static")
+set(CMAKE_EXE_LINKER_FLAGS "")
 
 
 add_executable(
@@ -42,6 +41,6 @@ if (MSVC)
     target_link_options(${PROJECT_NAME} PRIVATE /ENTRY:mainCRTStartup)
 endif()
 
-target_link_libraries(${PROJECT_NAME} PRIVATE SDL2::SDL2-static)
+target_link_libraries(${PROJECT_NAME} PRIVATE SDL2::SDL2)
 
 add_definitions(-DSDL_MAIN_HANDLED)

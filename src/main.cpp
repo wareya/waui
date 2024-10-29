@@ -3,6 +3,7 @@
 
 #include <unordered_map>
 #include <thread>
+#include <functional>
 #include <cstdint>
 
 #include "waui.hpp"
@@ -126,53 +127,63 @@ void feed_event_to_ui(SDL_Event event, WaUI & ui)
 
 struct CallbackContext
 {
+    std::mutex events_mutex;
+    std::vector<SDL_Event> events;
+    std::vector<std::function<void(void)>> render_commands;
     SDL_Renderer * renderer;
     bool ime_started = false;
     std::unordered_map<uint64_t, SDL_Texture *> textures;
     uint64_t next_id = 1;
 };
 
-std::mutex events_mutex;
-SDL_Renderer * renderer = 0;
-std::vector<SDL_Event> events;
 bool dead = false;
 
-int application_main(SDL_Window * window)
+int application_main(CallbackContext * context)
 {
-    auto _renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED);
-    renderer = _renderer;
-    
-    if (!renderer)
-        return fprintf(stderr, "failed to open SDL renderer"), -1;
-    
     auto ui = WaUI();
-    
-    auto context = CallbackContext();
-    context.renderer = renderer;
-    
-    ui.userdata = &context;
+    ui.userdata = context;
+    printf("---------%p\n", context);
+    fflush(stdout);
     
     auto sdl_begin_frame = [](void * userdata)
     {
-        auto renderer = ((CallbackContext *) userdata)->renderer;
-        SDL_SetRenderDrawColor(renderer, 64, 64, 64, 255);
-        SDL_RenderClear(renderer);
+        auto context = (CallbackContext *) userdata;
+        context->events_mutex.lock();
+        context->render_commands.push_back([=]()
+        {
+            auto renderer = context->renderer;
+            SDL_SetRenderDrawColor(renderer, 64, 64, 64, 255);
+            SDL_RenderClear(renderer);
+        });
+        context->events_mutex.unlock();
     };
     auto sdl_finish_frame = [](void * userdata)
     {
-        auto renderer = ((CallbackContext *) userdata)->renderer;
-        SDL_RenderPresent(renderer);
+        auto context = (CallbackContext *) userdata;
+        context->events_mutex.lock();
+        context->render_commands.push_back([=]()
+        {
+            auto renderer = context->renderer;
+            SDL_RenderPresent(renderer);
+        });
+        context->events_mutex.unlock();
     };
     auto sdl_draw_rect = [](void * userdata, float x, float y, float w, float h, uint8_t r, uint8_t g, uint8_t b, uint8_t a)
     {
-        auto renderer = ((CallbackContext *) userdata)->renderer;
-        SDL_Rect rect;
-        rect.x = x;
-        rect.y = y;
-        rect.w = w;
-        rect.h = h;
-        SDL_SetRenderDrawColor(renderer, r, g, b, a);
-        SDL_RenderFillRect(renderer, &rect);
+        auto context = (CallbackContext *) userdata;
+        context->events_mutex.lock();
+        ((CallbackContext *) userdata)->render_commands.push_back([=]()
+        {
+            auto renderer = context->renderer;
+            SDL_Rect rect;
+            rect.x = x;
+            rect.y = y;
+            rect.w = w;
+            rect.h = h;
+            SDL_SetRenderDrawColor(renderer, r, g, b, a);
+            SDL_RenderFillRect(renderer, &rect);
+        });
+        context->events_mutex.unlock();
     };
     auto sdl_draw_texture_rect = [](void * userdata,
         float x, float y, float w, float h,
@@ -181,112 +192,148 @@ int application_main(SDL_Window * window)
         uint32_t tex_size_w, uint32_t tex_size_h)
     {
         auto context = (CallbackContext *) userdata;
-        auto renderer = context->renderer;
-        auto & textures = context->textures;
-        
-        auto texture = textures[tex];
-        
-        SDL_Vertex verts[4] = {
-            {{x    , y    }, {r, g, b, a}, {(tex_x        ) / tex_size_w, (tex_y        ) / tex_size_h}},
-            {{x + w, y    }, {r, g, b, a}, {(tex_x + tex_w) / tex_size_w, (tex_y        ) / tex_size_h}},
-            {{x    , y + h}, {r, g, b, a}, {(tex_x        ) / tex_size_w, (tex_y + tex_h) / tex_size_h}},
-            {{x + w, y + h}, {r, g, b, a}, {(tex_x + tex_w) / tex_size_w, (tex_y + tex_h) / tex_size_h}},
-        };
-        
-        int indexes[6] = {0, 1, 2, 2, 1, 3};
-        
-        SDL_RenderGeometry(renderer, texture, verts, 4, indexes, 6);
+        context->events_mutex.lock();
+        ((CallbackContext *) userdata)->render_commands.push_back([=]()
+        {
+            auto renderer = context->renderer;
+            auto & textures = context->textures;
+            
+            auto texture = textures[tex];
+            
+            SDL_Vertex verts[4] = {
+                {{x    , y    }, {r, g, b, a}, {(tex_x        ) / tex_size_w, (tex_y        ) / tex_size_h}},
+                {{x + w, y    }, {r, g, b, a}, {(tex_x + tex_w) / tex_size_w, (tex_y        ) / tex_size_h}},
+                {{x    , y + h}, {r, g, b, a}, {(tex_x        ) / tex_size_w, (tex_y + tex_h) / tex_size_h}},
+                {{x + w, y + h}, {r, g, b, a}, {(tex_x + tex_w) / tex_size_w, (tex_y + tex_h) / tex_size_h}},
+            };
+            
+            int indexes[6] = {0, 1, 2, 2, 1, 3};
+            
+            SDL_RenderGeometry(renderer, texture, verts, 4, indexes, 6);
+        });
+        context->events_mutex.unlock();
     };
     
     auto sdl_clip_rect_set = [](void * userdata, float x, float y, float w, float h)
     {
         auto context = (CallbackContext *) userdata;
-        auto renderer = context->renderer;
-        
-        SDL_Rect rect;
-        rect.x = (int)x;
-        rect.y = (int)y;
-        rect.w = (int)w;
-        rect.h = (int)h;
-        
-        // for debugging
-        //SDL_RenderSetClipRect(renderer, nullptr);
-        //SDL_SetRenderDrawColor(renderer, 255, 0, 0, 255);
-        //SDL_RenderDrawRect(renderer, &rect);
-        
-        SDL_RenderSetClipRect(renderer, &rect);
+        context->events_mutex.lock();
+        ((CallbackContext *) userdata)->render_commands.push_back([=]()
+        {
+            auto renderer = context->renderer;
+            SDL_Rect rect;
+            rect.x = (int)x;
+            rect.y = (int)y;
+            rect.w = (int)w;
+            rect.h = (int)h;
+            
+            // for debugging
+            //SDL_RenderSetClipRect(renderer, nullptr);
+            //SDL_SetRenderDrawColor(renderer, 255, 0, 0, 255);
+            //SDL_RenderDrawRect(renderer, &rect);
+            
+            SDL_RenderSetClipRect(renderer, &rect);
+        });
+        context->events_mutex.unlock();
     };
     auto sdl_clip_rect_clear = [](void * userdata)
     {
         auto context = (CallbackContext *) userdata;
-        auto renderer = context->renderer;
-        SDL_RenderSetClipRect(renderer, nullptr);
+        context->events_mutex.lock();
+        ((CallbackContext *) userdata)->render_commands.push_back([=]()
+        {
+            auto renderer = context->renderer;
+            SDL_RenderSetClipRect(renderer, nullptr);
+        });
+        context->events_mutex.unlock();
     };
     
     auto sdl_ime_rect_inform = [](void * userdata, float x, float y, float w, float h)
     {
         auto context = (CallbackContext *) userdata;
-        
-        SDL_Rect rect;
-        rect.x = (int)x;
-        rect.y = (int)y;
-        rect.w = (int)w;
-        rect.h = (int)h;
-        if (rect.w * rect.h > 0)
+        context->events_mutex.lock();
+        context->render_commands.push_back([=]()
         {
-            SDL_SetTextInputRect(&rect);
-            if (!context->ime_started)
+            SDL_Rect rect;
+            rect.x = (int)x;
+            rect.y = (int)y;
+            rect.w = (int)w;
+            rect.h = (int)h;
+            if (rect.w * rect.h > 0)
             {
-                SDL_StartTextInput();
-                //puts("called SDL_StartTextInput");
+                SDL_SetTextInputRect(&rect);
+                if (!context->ime_started)
+                {
+                    SDL_StartTextInput();
+                    //puts("called SDL_StartTextInput");
+                }
+                context->ime_started = true;
+                //printf("setting ime rect to %d %d %d %d\n", rect.x, rect.y, rect.w, rect.h);
             }
-            context->ime_started = true;
-            //printf("setting ime rect to %d %d %d %d\n", rect.x, rect.y, rect.w, rect.h);
-        }
-        else
-        {
-            SDL_SetTextInputRect(nullptr);
-            if (context->ime_started)
+            else
             {
-                SDL_StopTextInput();
-                //puts("called SDL_StopTextInput");
+                SDL_SetTextInputRect(nullptr);
+                if (context->ime_started)
+                {
+                    SDL_StopTextInput();
+                    //puts("called SDL_StopTextInput");
+                }
+                context->ime_started = false;
+                //puts("clearing ime rect");
             }
-            context->ime_started = false;
-            //puts("clearing ime rect");
-        }
+        });
+        context->events_mutex.unlock();
     };
     
-    auto sdl_texture_create = [](void * userdata, uint32_t w, uint32_t h, bool filter, uint8_t bpp, const unsigned char * data)
+    auto sdl_texture_create = [](void * userdata, uint32_t w, uint32_t h, bool filter, uint8_t bytes_per_pixel, const unsigned char * data)
     {
         auto context = (CallbackContext *) userdata;
-        auto renderer = context->renderer;
-        auto & textures = context->textures;
+        context->events_mutex.lock();
         
-        if (filter)
-            SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "1");
-        else
-            SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "0");
-        
-        auto format = SDL_PIXELFORMAT_RGBA32;
-        if (bpp == 3)
-            format = SDL_PIXELFORMAT_RGB24;
-        
-        auto texture = SDL_CreateTexture(renderer, format, SDL_TEXTUREACCESS_STATIC, w, h);
         auto texture_id = context->next_id;
         context->next_id += 1;
-        textures.insert({texture_id, texture});
         
-        SDL_UpdateTexture(texture, NULL, data, w * 4);
-        SDL_SetTextureBlendMode(texture, SDL_BLENDMODE_BLEND);
+        const unsigned char * safe_data = (unsigned char *)malloc(w * h * bytes_per_pixel);
+        if (!safe_data)
+            throw;
+        memcpy((void *)safe_data, (void *)data, w * h * bytes_per_pixel);
         
+        context->render_commands.push_back([=]()
+        {
+            auto renderer = context->renderer;
+            auto & textures = context->textures;
+            
+            if (filter)
+                SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "1");
+            else
+                SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "0");
+            
+            auto format = SDL_PIXELFORMAT_RGBA32;
+            if (bytes_per_pixel == 3)
+                format = SDL_PIXELFORMAT_RGB24;
+            
+            auto texture = SDL_CreateTexture(renderer, format, SDL_TEXTUREACCESS_STATIC, w, h);
+            textures.insert({texture_id, texture});
+            
+            SDL_UpdateTexture(texture, NULL, safe_data, w * 4);
+            free((void *)safe_data);
+            SDL_SetTextureBlendMode(texture, SDL_BLENDMODE_BLEND);
+        });
+        context->events_mutex.unlock();
         return texture_id;
     };
     auto sdl_texture_destroy = [](void * userdata, uint32_t texture_id)
     {
-        auto & textures = ((CallbackContext *) userdata)->textures;
-        auto texture = textures[texture_id];
-        textures.erase(texture_id);
-        SDL_DestroyTexture(texture);
+        auto context = (CallbackContext *) userdata;
+        context->events_mutex.lock();
+        context->render_commands.push_back([=]()
+        {
+            auto & textures = context->textures;
+            auto texture = textures[texture_id];
+            textures.erase(texture_id);
+            SDL_DestroyTexture(texture);
+        });
+        context->events_mutex.unlock();
     };
     
     auto api = WaRenderAPI();
@@ -349,19 +396,19 @@ int application_main(SDL_Window * window)
         
         // waui event phase
         
-        events_mutex.lock();
-        for (auto & event : events)
+        context->events_mutex.lock();
+        for (auto & event : context->events)
         {
             if (event.type == SDL_QUIT)
             {
-                events_mutex.unlock();
+                context->events_mutex.unlock();
                 dead = true;
                 goto exit;
             }
             feed_event_to_ui(event, ui);
         }
-        events.clear();
-        events_mutex.unlock();
+        context->events.clear();
+        context->events_mutex.unlock();
         
         // application logic phase
         
@@ -396,74 +443,81 @@ int application_main(SDL_Window * window)
     }
     exit:
     
+    context->events_mutex.lock();
+    context->render_commands.clear();
+    context->events_mutex.unlock();
+    
     ui.clean_up(&api);
 
-    SDL_DestroyRenderer(renderer);
-    
     return 0;
 }
 
 int main()
 {
-    setbuf(stdout, nullptr);
+    if (SDL_Init(SDL_INIT_EVERYTHING) != 0)
+        return fprintf(stderr, "failed to initialize SDL"), -1;
     
-    SDL_Window * window = nullptr;
+    SDL_SetHint(SDL_HINT_IME_SHOW_UI, "1");
+    SDL_SetHint(SDL_HINT_IME_SUPPORT_EXTENDED_TEXT, "1");
     
-    std::thread window_thread([&]()
+    SDL_Window * window = SDL_CreateWindow("WaUI Demo", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, 800, 600, SDL_WINDOW_SHOWN);
+    if (!window)
+        return fprintf(stderr, "failed to open SDL window"), -1;
+    
+    SDL_SetWindowResizable(window, SDL_TRUE);
+    
+    SDL_Renderer * renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED);
+    if (!renderer)
+        return fprintf(stderr, "failed to open SDL renderer"), -1;
+    
+    auto context = CallbackContext();
+    context.renderer = renderer;
+    
+    std::thread app_thread(application_main, &context);
+    
+    auto event_pumper = [](void * userdata, SDL_Event * event) -> int
     {
-        if (SDL_Init(SDL_INIT_EVERYTHING) != 0)
-            return fprintf(stderr, "failed to initialize SDL"), -1;
+        auto context = (CallbackContext *)userdata;
+        context->events_mutex.lock();
         
-        std::pair<std::mutex *, std::vector<SDL_Event> *> asdf = {&events_mutex, &events};
-        
-        SDL_SetHint(SDL_HINT_IME_SHOW_UI, "1");
-        SDL_SetHint(SDL_HINT_IME_SUPPORT_EXTENDED_TEXT, "1");
-        
-        events_mutex.lock();
-        window = SDL_CreateWindow("WaUI Demo", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, 800, 600, SDL_WINDOW_SHOWN);
-        events_mutex.unlock();
-        if (!window)
-            return fprintf(stderr, "failed to open SDL window"), -1;
-        
-        SDL_SetWindowResizable(window, SDL_TRUE);
-        
-        auto event_pumper = [](void * userdata, SDL_Event * event) -> int
+        if (context->render_commands.size() > 0)
         {
-            if (event->type == SDL_POLLSENTINEL)
-                return 0;
-            auto asdf = (std::pair<std::mutex *, std::vector<SDL_Event> *> *)userdata;
-            asdf->first->lock();
-            asdf->second->push_back(*event);
-            asdf->first->unlock();
+            auto render_commands = std::move(context->render_commands);
+            context->render_commands = {};
+            context->events_mutex.unlock();
             
-            return 0;
-        };
-        
-        SDL_AddEventWatch((SDL_EventFilter)event_pumper, (void *)&asdf);
-        
-        while (!dead)
-        {
-            SDL_Event event;
-            while (SDL_PollEvent(&event));
-            SDL_Delay(1);
+            for (auto & c : render_commands)
+                c();
+            render_commands.clear();
         }
+        else
+            context->events_mutex.unlock();
         
-        SDL_DestroyWindow(window);
+        context->events_mutex.lock();
+        if (event->type == SDL_POLLSENTINEL)
+        {
+            context->events_mutex.unlock();
+            return 0;
+        }
+        context->events.push_back(*event);
+        context->events_mutex.unlock();
+        
         return 0;
-    });
+    };
     
-    events_mutex.lock();
-    while (!window)
+    SDL_AddEventWatch((SDL_EventFilter)event_pumper, (void *)&context);
+    
+    while (!dead)
     {
-        events_mutex.unlock();
+        SDL_Event event;
+        while (SDL_PollEvent(&event));
         SDL_Delay(1);
-        events_mutex.lock();
     }
-    events_mutex.unlock();
     
-    application_main(window);
+    app_thread.join();
     
-    window_thread.join();
+    SDL_DestroyRenderer(renderer);
+    SDL_DestroyWindow(window);
     
     SDL_Quit();
 
