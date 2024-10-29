@@ -149,6 +149,7 @@ int application_main(CallbackContext * context)
     {
         auto context = (CallbackContext *) userdata;
         context->events_mutex.lock();
+        context->render_commands.clear();
         context->render_commands.push_back([=]()
         {
             auto renderer = context->renderer;
