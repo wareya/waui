@@ -972,6 +972,11 @@ struct WaLineEdit
                     {
                         new_cursor = std::clamp(prev_pos_utf8(text.data(), new_cursor), 0, (int)text.size());
                         auto kind = codepoint_kind(codepoint_utf8(text.data() + new_cursor));
+                        while (kind == 1 && new_cursor != 0)
+                        {
+                            new_cursor = std::clamp(prev_pos_utf8(text.data(), new_cursor), 0, (int)text.size());
+                            kind = codepoint_kind(codepoint_utf8(text.data() + new_cursor));
+                        }
                         while (new_cursor != 0)
                         {
                             auto next_cursor = std::clamp(prev_pos_utf8(text.data(), new_cursor), 0, (int)text.size());
@@ -985,6 +990,11 @@ struct WaLineEdit
                     else if ((event.data & WaEvent::ActionMod::CTRL) && event.subtype == WaEvent::Action::RIGHT)
                     {
                         auto kind = codepoint_kind(codepoint_utf8(text.data() + new_cursor));
+                        while (kind == 1 && new_cursor < text.size())
+                        {
+                            new_cursor = std::clamp(next_pos_utf8(text.data(), new_cursor), 0, (int)text.size());
+                            kind = codepoint_kind(codepoint_utf8(text.data() + new_cursor));
+                        }
                         while (new_cursor < text.size())
                         {
                             auto next_cursor = std::clamp(next_pos_utf8(text.data(), new_cursor), 0, (int)text.size());
