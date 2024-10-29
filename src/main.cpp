@@ -156,12 +156,10 @@ int application_main(CallbackContext * context)
             SDL_SetRenderDrawColor(renderer, 64, 64, 64, 255);
             SDL_RenderClear(renderer);
         });
-        context->events_mutex.unlock();
     };
     auto sdl_finish_frame = [](void * userdata)
     {
         auto context = (CallbackContext *) userdata;
-        context->events_mutex.lock();
         context->render_commands.push_back([=]()
         {
             auto renderer = context->renderer;
@@ -172,7 +170,6 @@ int application_main(CallbackContext * context)
     auto sdl_draw_rect = [](void * userdata, float x, float y, float w, float h, uint8_t r, uint8_t g, uint8_t b, uint8_t a)
     {
         auto context = (CallbackContext *) userdata;
-        context->events_mutex.lock();
         ((CallbackContext *) userdata)->render_commands.push_back([=]()
         {
             auto renderer = context->renderer;
@@ -184,7 +181,6 @@ int application_main(CallbackContext * context)
             SDL_SetRenderDrawColor(renderer, r, g, b, a);
             SDL_RenderFillRect(renderer, &rect);
         });
-        context->events_mutex.unlock();
     };
     auto sdl_draw_texture_rect = [](void * userdata,
         float x, float y, float w, float h,
@@ -193,7 +189,6 @@ int application_main(CallbackContext * context)
         uint32_t tex_size_w, uint32_t tex_size_h)
     {
         auto context = (CallbackContext *) userdata;
-        context->events_mutex.lock();
         ((CallbackContext *) userdata)->render_commands.push_back([=]()
         {
             auto renderer = context->renderer;
@@ -212,13 +207,11 @@ int application_main(CallbackContext * context)
             
             SDL_RenderGeometry(renderer, texture, verts, 4, indexes, 6);
         });
-        context->events_mutex.unlock();
     };
     
     auto sdl_clip_rect_set = [](void * userdata, float x, float y, float w, float h)
     {
         auto context = (CallbackContext *) userdata;
-        context->events_mutex.lock();
         ((CallbackContext *) userdata)->render_commands.push_back([=]()
         {
             auto renderer = context->renderer;
@@ -235,18 +228,15 @@ int application_main(CallbackContext * context)
             
             SDL_RenderSetClipRect(renderer, &rect);
         });
-        context->events_mutex.unlock();
     };
     auto sdl_clip_rect_clear = [](void * userdata)
     {
         auto context = (CallbackContext *) userdata;
-        context->events_mutex.lock();
         ((CallbackContext *) userdata)->render_commands.push_back([=]()
         {
             auto renderer = context->renderer;
             SDL_RenderSetClipRect(renderer, nullptr);
         });
-        context->events_mutex.unlock();
     };
     
     auto sdl_ime_rect_inform = [](void * userdata, float x, float y, float w, float h)
