@@ -8,6 +8,9 @@ else()
     add_compile_options(-Wall -Wextra -pedantic -Wno-unused-parameter -fdiagnostics-color=always -ggdb)
 endif()
 
+add_compile_options(-fsanitize=address)
+add_link_options(-fsanitize=address)
+
 add_executable(bin2src src/res/bin2src.c)
 
 file(GLOB PNG_FILES src/res/*.png)
@@ -42,5 +45,6 @@ if (MSVC)
 endif()
 
 target_link_libraries(${PROJECT_NAME} PRIVATE SDL2::SDL2)
+
 
 add_definitions(-DSDL_MAIN_HANDLED)

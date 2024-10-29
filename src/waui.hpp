@@ -569,6 +569,8 @@ int next_pos_utf8(const char * str, int pos)
 {
     if (*str == 0)
         return 0;
+    if (str[pos] == 0)
+        return pos;
     pos++;
     while (str[pos] != 0 and (str[pos] & 0xC0) == 0x80)
         pos++;
@@ -886,7 +888,7 @@ struct WaLineEdit
             auto best_dist = 100000;
             auto best_c = 0;
             auto c = 0;
-            while ((size_t)c <= data->text.size())
+            while ((size_t)c <= data->text.size() && data->text.size() != 0)
             {
                 auto substring = data->text_transient.substr(0, c);
                 auto coord = ui->string_get_width(substring.data()) + control->padding.a.x - data->view_offset;

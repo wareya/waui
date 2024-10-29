@@ -343,11 +343,16 @@ int application_main(CallbackContext * context)
     
     auto sdl_clipboard_text_get = [](void * userdata) -> char *
     {
-        return SDL_GetClipboardText();
+        char * raw = SDL_GetClipboardText();
+        size_t len = strlen(raw) + 1;
+        char * mine = (char *)malloc(len);
+        memcpy(mine, raw, len);
+        SDL_free(raw);
+        return mine;
     };
     auto sdl_clipboard_text_free = [](void * userdata, char * str)
     {
-        SDL_free(str);
+        free(str);
     };
     auto sdl_clipboard_text_set = [](void * userdata, const char * str)
     {
