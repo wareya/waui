@@ -1589,6 +1589,10 @@ void WaUI::render_scene(WaRenderAPI * api)
     api->draw_clip_rect_clear(userdata);
     
     last_clip_rect = {{0, 0}, size};
+    if (last_clip_rect.size.x < 0.0f)
+        last_clip_rect.size.x = 0.0f;
+    if (last_clip_rect.size.y < 0.0f)
+        last_clip_rect.size.y = 0.0f;
     api->draw_clip_rect_set(userdata, last_clip_rect.pos.x, last_clip_rect.pos.y, last_clip_rect.size.x, last_clip_rect.size.y);
     
     render_control(api, root_control_id);
@@ -1863,6 +1867,10 @@ void WaUI::render_control(WaRenderAPI * api, uint64_t id)
     {
         last_clip_rect = last_clip_rect.clip({pos, control->rect.size});
         last_clip_rect = last_clip_rect.round();
+        if (last_clip_rect.size.x < 0.0f)
+            last_clip_rect.size.x = 0.0f;
+        if (last_clip_rect.size.y < 0.0f)
+            last_clip_rect.size.y = 0.0f;
         api->draw_clip_rect_set(userdata, last_clip_rect.pos.x, last_clip_rect.pos.y, last_clip_rect.size.x, last_clip_rect.size.y);
     }
     
@@ -1877,6 +1885,10 @@ void WaUI::render_control(WaRenderAPI * api, uint64_t id)
     {
         render_control(api, child_id);
         last_clip_rect = clip_at_start;
+        if (last_clip_rect.size.x < 0.0f)
+            last_clip_rect.size.x = 0.0f;
+        if (last_clip_rect.size.y < 0.0f)
+            last_clip_rect.size.y = 0.0f;
         api->draw_clip_rect_set(userdata, last_clip_rect.pos.x, last_clip_rect.pos.y, last_clip_rect.size.x, last_clip_rect.size.y);
     }
     

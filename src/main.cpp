@@ -211,6 +211,8 @@ int application_main(CallbackContext * context)
     
     auto sdl_clip_rect_set = [](void * userdata, float x, float y, float w, float h)
     {
+        if (w < 0.0f) w = 0.0f;
+        if (h < 0.0f) h = 0.0f;
         auto context = (CallbackContext *) userdata;
         ((CallbackContext *) userdata)->render_commands.push_back([=]()
         {
@@ -443,6 +445,23 @@ int application_main(CallbackContext * context)
     return 0;
 }
 
+void check_render_commands(CallbackContext * context)
+{
+    context->events_mutex.lock();
+    if (context->render_commands.size() > 0)
+    {
+        auto render_commands = std::move(context->render_commands);
+        context->render_commands = {};
+        context->events_mutex.unlock();
+        
+        for (auto & c : render_commands)
+            c();
+        render_commands.clear();
+    }
+    else
+        context->events_mutex.unlock();
+}
+
 int main()
 {
     if (SDL_Init(SDL_INIT_EVERYTHING) != 0)
@@ -469,20 +488,6 @@ int main()
     auto event_pumper = [](void * userdata, SDL_Event * event) -> int
     {
         auto context = (CallbackContext *)userdata;
-        context->events_mutex.lock();
-        
-        if (context->render_commands.size() > 0)
-        {
-            auto render_commands = std::move(context->render_commands);
-            context->render_commands = {};
-            context->events_mutex.unlock();
-            
-            for (auto & c : render_commands)
-                c();
-            render_commands.clear();
-        }
-        else
-            context->events_mutex.unlock();
         
         context->events_mutex.lock();
         if (event->type == SDL_POLLSENTINEL)
@@ -493,6 +498,9 @@ int main()
         context->events.push_back(*event);
         context->events_mutex.unlock();
         
+        if (event->type == SDL_WINDOWEVENT && event->window.event == SDL_WINDOWEVENT_EXPOSED)
+            check_render_commands(context);
+        
         return 0;
     };
     
@@ -502,6 +510,9 @@ int main()
     {
         SDL_Event event;
         while (SDL_PollEvent(&event));
+        
+        check_render_commands(&context);
+        
         SDL_Delay(1);
     }
     
