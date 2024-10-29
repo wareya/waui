@@ -128,6 +128,7 @@ void feed_event_to_ui(SDL_Event event, WaUI & ui)
 struct CallbackContext
 {
     std::mutex events_mutex;
+    std::mutex render_mutex;
     std::vector<SDL_Event> events;
     std::vector<std::function<void(void)>> render_commands;
     SDL_Renderer * renderer;
@@ -148,7 +149,7 @@ int application_main(CallbackContext * context)
     auto sdl_begin_frame = [](void * userdata)
     {
         auto context = (CallbackContext *) userdata;
-        context->events_mutex.lock();
+        context->render_mutex.lock();
         context->render_commands.clear();
         context->render_commands.push_back([=]()
         {
@@ -165,7 +166,7 @@ int application_main(CallbackContext * context)
             auto renderer = context->renderer;
             SDL_RenderPresent(renderer);
         });
-        context->events_mutex.unlock();
+        context->render_mutex.unlock();
     };
     auto sdl_draw_rect = [](void * userdata, float x, float y, float w, float h, uint8_t r, uint8_t g, uint8_t b, uint8_t a)
     {
@@ -281,7 +282,7 @@ int application_main(CallbackContext * context)
     auto sdl_texture_create = [](void * userdata, uint32_t w, uint32_t h, bool filter, uint8_t bytes_per_pixel, const unsigned char * data)
     {
         auto context = (CallbackContext *) userdata;
-        context->events_mutex.lock();
+        context->render_mutex.lock();
         
         auto texture_id = context->next_id;
         context->next_id += 1;
@@ -312,13 +313,13 @@ int application_main(CallbackContext * context)
             free((void *)safe_data);
             SDL_SetTextureBlendMode(texture, SDL_BLENDMODE_BLEND);
         });
-        context->events_mutex.unlock();
+        context->render_mutex.unlock();
         return texture_id;
     };
     auto sdl_texture_destroy = [](void * userdata, uint32_t texture_id)
     {
         auto context = (CallbackContext *) userdata;
-        context->events_mutex.lock();
+        context->render_mutex.lock();
         context->render_commands.push_back([=]()
         {
             auto & textures = context->textures;
@@ -326,7 +327,7 @@ int application_main(CallbackContext * context)
             textures.erase(texture_id);
             SDL_DestroyTexture(texture);
         });
-        context->events_mutex.unlock();
+        context->render_mutex.unlock();
     };
     
     auto api = WaRenderAPI();
@@ -436,9 +437,9 @@ int application_main(CallbackContext * context)
     }
     exit:
     
-    context->events_mutex.lock();
+    context->render_mutex.lock();
     context->render_commands.clear();
-    context->events_mutex.unlock();
+    context->render_mutex.unlock();
     
     ui.clean_up(&api);
 
@@ -447,25 +448,27 @@ int application_main(CallbackContext * context)
 
 void check_render_commands(CallbackContext * context)
 {
-    context->events_mutex.lock();
+    context->render_mutex.lock();
     if (context->render_commands.size() > 0)
     {
         auto render_commands = std::move(context->render_commands);
         context->render_commands = {};
-        context->events_mutex.unlock();
+        context->render_mutex.unlock();
         
         for (auto & c : render_commands)
             c();
         render_commands.clear();
     }
     else
-        context->events_mutex.unlock();
+        context->render_mutex.unlock();
 }
 
 int main()
 {
     if (SDL_Init(SDL_INIT_EVERYTHING) != 0)
         return fprintf(stderr, "failed to initialize SDL"), -1;
+    
+    setbuf(stdout, nullptr);
     
     SDL_SetHint(SDL_HINT_IME_SHOW_UI, "1");
     SDL_SetHint(SDL_HINT_IME_SUPPORT_EXTENDED_TEXT, "1");
