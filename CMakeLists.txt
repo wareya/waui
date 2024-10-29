@@ -8,8 +8,10 @@ else()
     add_compile_options(-Wall -Wextra -pedantic -Wno-unused-parameter -fdiagnostics-color=always -ggdb)
 endif()
 
-add_compile_options(-fsanitize=address)
-add_link_options(-fsanitize=address)
+if (NOT WIN32)
+    add_compile_options(-fsanitize=address)
+    add_link_options(-fsanitize=address)
+endif()
 
 add_executable(bin2src src/res/bin2src.c)
 

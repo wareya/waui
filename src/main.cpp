@@ -33,6 +33,8 @@ void feed_event_to_ui(SDL_Event event, WaUI & ui)
         auto mod = SDL_GetModState();
         if (mod & KMOD_SHIFT)
             wa_event.data |= WaEvent::ActionMod::SHIFT;
+        if (mod & KMOD_CTRL)
+            wa_event.data |= WaEvent::ActionMod::CTRL;
         
         switch (event.key.keysym.sym)
         {

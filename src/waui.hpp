@@ -370,6 +370,7 @@ struct WaEvent
     enum ActionMod // 'or' mask into data property
     {
         SHIFT = 1,
+        CTRL = 2,
     };
     
     int type = 0; // e.g. RESIZE, ACTION, MOUSE_POSITION
@@ -534,6 +535,19 @@ struct WaControl
     }
 };
 
+uint32_t codepoint_kind(int c)
+{
+    if (c == 0)
+        return 0;
+    else if (c == ' ' || c == '\t' || c == '\n' || c == '\r')
+        return 1;
+    else if ((c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z')  || (c >= 'a' && c <= 'z') || c == '_')
+        return 2;
+    else if (c <= 0xFF)
+        return 3;
+    else
+        return 4;
+}
 // assumes that the text is valid utf-8 and null-terminated
 uint32_t next_codepoint_utf8(const char * & str)
 {
@@ -564,6 +578,10 @@ uint32_t next_codepoint_utf8(const char * & str)
     }
     
     return ret;
+}
+uint32_t codepoint_utf8(const char * str)
+{
+    return next_codepoint_utf8(str);
 }
 int next_pos_utf8(const char * str, int pos)
 {
@@ -946,18 +964,43 @@ struct WaLineEdit
             {
                 if (data->text_transient.size() > 0)
                 {
-                    auto text = data->text_transient.data();
+                    auto & text = data->text_transient;
                     
                     auto new_cursor = data->cursor;
                     
+                    if ((event.data & WaEvent::ActionMod::CTRL) && event.subtype == WaEvent::Action::LEFT)
+                    {
+                        new_cursor = std::clamp(prev_pos_utf8(text.data(), new_cursor), 0, (int)text.size());
+                        auto kind = codepoint_kind(codepoint_utf8(text.data() + new_cursor));
+                        while (new_cursor != 0)
+                        {
+                            auto next_cursor = std::clamp(prev_pos_utf8(text.data(), new_cursor), 0, (int)text.size());
+                            if (kind != codepoint_kind(codepoint_utf8(text.data() + next_cursor)))
+                                break;
+                            new_cursor = next_cursor;
+                        }
+                        if (new_cursor != 0 && new_cursor < text.size())
+                            new_cursor = std::clamp(next_pos_utf8(text.data(), new_cursor), 0, (int)text.size());
+                    }
+                    else if ((event.data & WaEvent::ActionMod::CTRL) && event.subtype == WaEvent::Action::RIGHT)
+                    {
+                        auto kind = codepoint_kind(codepoint_utf8(text.data() + new_cursor));
+                        while (new_cursor < text.size())
+                        {
+                            auto next_cursor = std::clamp(next_pos_utf8(text.data(), new_cursor), 0, (int)text.size());
+                            if (kind != codepoint_kind(codepoint_utf8(text.data() + next_cursor)))
+                                break;
+                            new_cursor = next_cursor;
+                        }
+                    }
                     if (event.subtype == WaEvent::Action::LEFT)
-                        new_cursor = std::clamp(prev_pos_utf8(text, new_cursor), 0, (int)data->text.size());
+                        new_cursor = std::clamp(prev_pos_utf8(text.data(), new_cursor), 0, (int)text.size());
                     else if (event.subtype == WaEvent::Action::RIGHT)
-                        new_cursor = std::clamp(next_pos_utf8(text, new_cursor), 0, (int)data->text.size());
+                        new_cursor = std::clamp(next_pos_utf8(text.data(), new_cursor), 0, (int)text.size());
                     else if (event.subtype == WaEvent::Action::HOME)
                         new_cursor = 0;
                     else if (event.subtype == WaEvent::Action::END)
-                        new_cursor = (int)data->text.size();
+                        new_cursor = (int)text.size();
                     
                     if (event.data & WaEvent::ActionMod::SHIFT)
                     {
