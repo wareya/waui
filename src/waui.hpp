@@ -443,7 +443,8 @@ struct WaControlAPI
         {
             if (std::type_index(typeid(T)) == data_type)
                 delete (T *)data;
-            throw;
+            else
+                throw;
         }
         
         data_type = std::type_index(typeid(void));
@@ -834,7 +835,7 @@ struct WaScroller
     }
     static void destruct(WaControl * control)
     {
-        control->type_info.delete_data<WaScrollerData>();
+        //control->type_info.delete_data<WaScrollerData>();
     }
     static bool handle_event(WaControl * control, WaUI * ui, WaEvent event, Vec2 pos_offset)
     {
@@ -1280,6 +1281,10 @@ struct WaList
     {
         control->type_info.set_data(new WaListData());
     }
+    static void destruct(WaControl * control)
+    {
+        control->type_info.delete_data<WaListData>();
+    }
     static bool handle_event(WaControl * control, WaUI * ui, WaEvent event, Vec2 pos_offset)
     {
         return false;
@@ -1713,7 +1718,7 @@ uint64_t WaUI::load_texture(WaRenderAPI * api, const std::string & name, const u
     // wpng_load doesn't modify the underlying buffer data, so casting away const is safe
     idat = byte_buffer{(uint8_t*)data, data_size, data_size, 0};
     
-    wpng_load_output img_data;
+    wpng_load_output img_data = {};
     wpng_load(&idat, WPNG_READ_FORCE_8BIT, &img_data);
     
     // convert channel count if not 3 or 4 bytes per pixel
@@ -1838,6 +1843,13 @@ void WaUI::clean_up(WaRenderAPI * api)
     panel_texture = 0;
     api->texture_destroy(userdata, font_texture);
     font_texture = 0;
+    
+    for (auto & n : controls)
+    {
+        auto & control = n.second;
+        if (control->type_info.destruct)
+            control->type_info.destruct(&*control);
+    }
 };
 float WaUI::string_get_height(const char * string)
 {

@@ -131,6 +131,7 @@ struct CallbackContext
 {
     std::mutex events_mutex;
     std::mutex render_mutex;
+    std::mutex clipboard_mutex;
     std::vector<SDL_Event> events;
     std::vector<std::function<void(void)>> render_commands;
     SDL_Renderer * renderer;

@@ -2,4 +2,4 @@
 .trash/
 *.pdn
 *.tga
-src/generated/
+src/generated/img.h
