@@ -134,6 +134,7 @@ struct CallbackContext
     std::mutex clipboard_mutex;
     std::vector<SDL_Event> events;
     std::vector<std::function<void(void)>> render_commands;
+    SDL_Window * window;
     SDL_Renderer * renderer;
     bool ime_started = false;
     std::unordered_map<uint64_t, SDL_Texture *> textures;
@@ -146,7 +147,6 @@ int application_main(CallbackContext * context)
 {
     auto ui = WaUI();
     ui.userdata = context;
-    printf("---------%p\n", context);
     fflush(stdout);
     
     auto sdl_begin_frame = [](void * userdata)
@@ -471,30 +471,42 @@ void check_render_commands(CallbackContext * context)
         context->render_mutex.unlock();
 }
 
-int main()
+std::atomic<bool> initialized = false;
+
+void sdl_main_loop(CallbackContext * context)
 {
     if (SDL_Init(SDL_INIT_EVERYTHING) != 0)
-        return fprintf(stderr, "failed to initialize SDL"), -1;
+    {
+        initialized = true;
+        return fprintf(stderr, "failed to initialize SDL"), (void)0;
+    }
     
     setbuf(stdout, nullptr);
     
     SDL_SetHint(SDL_HINT_IME_SHOW_UI, "1");
     SDL_SetHint(SDL_HINT_IME_SUPPORT_EXTENDED_TEXT, "1");
     
-    SDL_Window * window = SDL_CreateWindow("WaUI Demo", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, 800, 600, SDL_WINDOW_SHOWN);
-    if (!window)
-        return fprintf(stderr, "failed to open SDL window"), -1;
+    context->window = SDL_CreateWindow("WaUI Demo", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, 800, 600, SDL_WINDOW_SHOWN);
+    if (!context->window)
+    {
+        SDL_Quit();
+        initialized = true;
+        return fprintf(stderr, "failed to open SDL window"), (void)0;
+    }
     
-    SDL_SetWindowResizable(window, SDL_TRUE);
+    SDL_SetWindowResizable(context->window, SDL_TRUE);
     
-    SDL_Renderer * renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED);
-    if (!renderer)
-        return fprintf(stderr, "failed to open SDL renderer"), -1;
+    context->renderer = SDL_CreateRenderer(context->window, -1, SDL_RENDERER_ACCELERATED);
+    if (!context->renderer)
+    {
     
-    auto context = CallbackContext();
-    context.renderer = renderer;
+        SDL_DestroyWindow(context->window);
+        SDL_Quit();
+        initialized = true;
+        return fprintf(stderr, "failed to open SDL renderer"), (void)0;
+    }
     
-    std::thread app_thread(application_main, &context);
+    initialized = true;
     
     auto event_pumper = [](void * userdata, SDL_Event * event) -> int
     {
@@ -515,24 +527,47 @@ int main()
         return 0;
     };
     
-    SDL_AddEventWatch((SDL_EventFilter)event_pumper, (void *)&context);
+    SDL_AddEventWatch((SDL_EventFilter)event_pumper, (void *)context);
     
     while (!dead)
     {
         SDL_Event event;
         while (SDL_PollEvent(&event));
         
-        check_render_commands(&context);
+        check_render_commands(context);
         
         SDL_Delay(1);
     }
     
-    app_thread.join();
-    
-    SDL_DestroyRenderer(renderer);
-    SDL_DestroyWindow(window);
-    
-    SDL_Quit();
+    return;
+}
 
-    return 0;
+int main()
+{
+    auto context = CallbackContext();
+    
+    // SDL stuff and the application need to be on separate threads to safely handle smooth window resizes
+    // ("safely" includes "without SDL accidentally controlling how often application logic runs")
+    std::thread sdl_thread(sdl_main_loop, &context);
+    
+    // this is OK because initialized is std::atomic, which uses the strictest ordering by default
+    while (!initialized) { }
+    
+    if (context.renderer) // successful initialization
+    {
+        application_main(&context);
+    
+        sdl_thread.join();
+        
+        SDL_DestroyRenderer(context.renderer);
+        SDL_DestroyWindow(context.window);
+        SDL_Quit();
+        
+        return 0;
+    }
+    else
+    {
+        sdl_thread.join();
+        return -1;
+    }
 }

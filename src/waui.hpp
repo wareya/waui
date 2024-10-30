@@ -1,3 +1,6 @@
+#ifndef INCLUDE_WAUI
+#define INCLUDE_WAUI
+
 /*
 TODO:
 - grid container (true and stretchy)
@@ -536,7 +539,7 @@ struct WaControl
     }
 };
 
-uint32_t codepoint_kind(int c)
+static inline uint32_t codepoint_kind(int c)
 {
     if (c == 0)
         return 0;
@@ -550,7 +553,7 @@ uint32_t codepoint_kind(int c)
         return 4;
 }
 // assumes that the text is valid utf-8 and null-terminated
-uint32_t next_codepoint_utf8(const char * & str)
+static inline uint32_t next_codepoint_utf8(const char * & str)
 {
     if (*str == 0)
         return 0;
@@ -580,11 +583,11 @@ uint32_t next_codepoint_utf8(const char * & str)
     
     return ret;
 }
-uint32_t codepoint_utf8(const char * str)
+static inline uint32_t codepoint_utf8(const char * str)
 {
     return next_codepoint_utf8(str);
 }
-int next_pos_utf8(const char * str, int pos)
+static inline int next_pos_utf8(const char * str, int pos)
 {
     if (*str == 0)
         return 0;
@@ -595,7 +598,7 @@ int next_pos_utf8(const char * str, int pos)
         pos++;
     return pos;
 }
-int prev_pos_utf8(const char * str, int pos)
+static inline int prev_pos_utf8(const char * str, int pos)
 {
     if (*str == 0 or pos == 0)
         return 0;
@@ -606,7 +609,7 @@ int prev_pos_utf8(const char * str, int pos)
 }
 
 // assumes that the text is valid utf-8
-size_t substr_len_utf8(const std::string & str, size_t start, size_t count)
+static inline size_t substr_len_utf8(const std::string & str, size_t start, size_t count)
 {
     size_t i = start;
     size_t n = 0;
@@ -985,18 +988,18 @@ struct WaLineEdit
                                 break;
                             new_cursor = next_cursor;
                         }
-                        if (new_cursor != 0 && new_cursor < text.size())
+                        if (new_cursor != 0 && new_cursor < (int)text.size())
                             new_cursor = std::clamp(next_pos_utf8(text.data(), new_cursor), 0, (int)text.size());
                     }
                     else if ((event.data & WaEvent::ActionMod::CTRL) && event.subtype == WaEvent::Action::RIGHT)
                     {
                         auto kind = codepoint_kind(codepoint_utf8(text.data() + new_cursor));
-                        while (kind == 1 && new_cursor < text.size())
+                        while (kind == 1 && new_cursor < (int)text.size())
                         {
                             new_cursor = std::clamp(next_pos_utf8(text.data(), new_cursor), 0, (int)text.size());
                             kind = codepoint_kind(codepoint_utf8(text.data() + new_cursor));
                         }
-                        while (new_cursor < text.size())
+                        while (new_cursor < (int)text.size())
                         {
                             auto next_cursor = std::clamp(next_pos_utf8(text.data(), new_cursor), 0, (int)text.size());
                             if (kind != codepoint_kind(codepoint_utf8(text.data() + next_cursor)))
@@ -2033,3 +2036,5 @@ void WaUI::focus_control_set(uint64_t new_control)
     focused_control = new_control;
     controls[focused_control]->handle_event(this, WaEvent{WaEvent::Type::FOCUS}, {0, 0});
 }
+
+#endif // INCLUDE_WAUI
