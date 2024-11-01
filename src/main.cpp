@@ -129,16 +129,21 @@ void feed_event_to_ui(SDL_Event event, WaUI & ui)
 
 struct CallbackContext
 {
-    std::mutex events_mutex;
-    std::mutex render_mutex;
     std::mutex clipboard_mutex;
+    std::string clipboard_set_text;
+    
+    std::mutex events_mutex;
     std::vector<SDL_Event> events;
+    
+    std::mutex render_mutex;
     std::vector<std::function<void(void)>> render_commands;
+    
     SDL_Window * window;
     SDL_Renderer * renderer;
-    bool ime_started = false;
     std::unordered_map<uint64_t, SDL_Texture *> textures;
     uint64_t next_id = 1;
+    
+    bool ime_started = false;
 };
 
 bool dead = false;

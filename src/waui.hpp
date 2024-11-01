@@ -10,21 +10,18 @@ TODO:
 - checkbox/radio buttons
 - dropdown menu
 - label with line wrapping
-- single-line text input 
 - slider input
 - number input
 - knob input
 
-- lineedit ctrl to skip to start/end of word
 - lineedit signal
 
 - cached min size calculation
 
-- multi-line text input (as an extension)
-
-- text shaping callback system
-
 - keyboard focus navigation
+
+- multi-line text input (as an extension)
+- text shaping callback system
 */
 
 #include <algorithm>
@@ -50,7 +47,6 @@ const int font_char_w = 7;
 const int font_char_h = 13;
 const int font_cols = 32;
 const int font_rows = 8;
-const int font_bits = 8;
 
 #define font_w font_image_width
 #define font_h font_image_height
@@ -61,10 +57,9 @@ const int font_char_w = 16;
 const int font_char_h = 16;
 const int font_cols = 256;
 const int font_rows = 256;
-const int font_bits = 32;
 
-#define font_w 4096
-#define font_h 4096
+const int font_w = 4096;
+const int font_h = 4096;
 
 #define USE_GEOMETRY_FOR_NINEPATCH 1
 
@@ -247,33 +242,21 @@ struct Vec2x2
 
 struct WaRenderAPI
 {
-    WaRenderAPI()
-    {
-        draw_begin_frame = nullptr;
-        draw_finish_frame = nullptr;
-        draw_rect = nullptr;
-        draw_texture_rect = nullptr;
-        draw_clip_rect_set = nullptr;
-        draw_clip_rect_clear = nullptr;
-        ime_rect_inform = nullptr;
-        texture_create = nullptr;
-        texture_destroy = nullptr;
-    }
+    // Waui will call these when it begins and finishes rendering a single frame.
+    void (*draw_begin_frame)(void * userdata) = nullptr;
+    void (*draw_finish_frame)(void * userdata) = nullptr;
     
-    void (*draw_begin_frame)(void * userdata);
-    void (*draw_finish_frame)(void * userdata);
-    void (*draw_rect)(void * userdata, float x, float y, float w, float h, uint8_t r, uint8_t g, uint8_t b, uint8_t a);
-    
+    // NOTE: draw_ commands will only ever appear between draw_begin_frame and draw_finish_frame
+    void (*draw_rect)(void * userdata, float x, float y, float w, float h, uint8_t r, uint8_t g, uint8_t b, uint8_t a) = nullptr;
     void (*draw_texture_rect)(void * userdata,
         float x, float y, float w, float h,
         uint8_t r, uint8_t g, uint8_t b, uint8_t a,
         uint64_t tex, float tex_x, float tex_y, float tex_w, float tex_h,
-        uint32_t tex_size_w, uint32_t tex_size_h);
+        uint32_t tex_size_w, uint32_t tex_size_h) = nullptr;
+    void (*draw_clip_rect_set)(void * userdata, float x, float y, float w, float h) = nullptr;
+    void (*draw_clip_rect_clear)(void * userdata) = nullptr;
     
-    void (*draw_clip_rect_set)(void * userdata, float x, float y, float w, float h);
-    void (*draw_clip_rect_clear)(void * userdata);
-    
-    void (*ime_rect_inform)(void * userdata, float x, float y, float w, float h);
+    // NOTE: the ime_ and texture_ commands will never appear between draw_begin_frame and draw_finish_frame
     
     // The given image data does not become owned by your application; you must copy it.
     // The given image data might disappear immediately after this function is called.
@@ -281,26 +264,23 @@ struct WaRenderAPI
     // Pixels are stored in row-major order, starting in the top left.
     // bytes_per_pixel is the number of bytes per pixel. Each channel must be exactly 8 bits.
     // 1 : Y, 2 : YA, 3 : RGB, 4 : RGBA
-    uint64_t (*texture_create)(void * userdata, uint32_t w, uint32_t h, bool filter, uint8_t bytes_per_pixel, const unsigned char * data);
-    
-    void (*texture_destroy)(void * userdata, uint32_t texture_id);
+    uint64_t (*texture_create)(void * userdata, uint32_t w, uint32_t h, bool filter, uint8_t bytes_per_pixel, const unsigned char * data) = nullptr;
+    void (*texture_destroy)(void * userdata, uint32_t texture_id) = nullptr;
+    void (*ime_rect_inform)(void * userdata, float x, float y, float w, float h) = nullptr;
 };
 
 struct WaSystemAPI
 {
-    WaSystemAPI()
-    {
-        clipboard_text_get = nullptr;
-        clipboard_text_free = nullptr;
-        clipboard_text_set = nullptr;
-    }
-    
     // The UI system will attempt to free the returned string by subsequently calling clipboard_text_free().
-    char * (*clipboard_text_get)(void * userdata);
+    char * (*clipboard_text_get)(void * userdata) = nullptr;
     // Frees the string returned by the above function.
-    void (*clipboard_text_free)(void * userdata, char * text);
+    void (*clipboard_text_free)(void * userdata, char * text) = nullptr;
     // The application does not gain ownership of the text pointer; the UI system retains ownership of it.
-    void (*clipboard_text_set)(void * userdata, const char * text);
+    // NOTE: it is allowed for it to take a small amount of time for clipboard_text_set to affect clipboard_text_get.
+    // i.e. text set via clipboard_text_set will not necessarily immediately become available in clipboard_text_get.
+    // It might take a few application frames or render cycles.
+    // This is because clipboard access might require talking over a thread on some platforms.
+    void (*clipboard_text_set)(void * userdata, const char * text) = nullptr;
 };
 
 struct WaEvent
@@ -823,6 +803,55 @@ struct WaButton
     }
 };
 
+
+struct WaLabelData
+{
+    std::string label;
+};
+struct WaLabel
+{
+    static void init(WaControl * control)
+    {
+        control->modulate_dynamic = Color{220, 220, 220, 255};
+        
+        auto data = control->type_info.set_data(new WaButtonData());
+        data->label = "no YOU are a button";
+    }
+    static void destruct(WaControl * control)
+    {
+        control->type_info.delete_data<WaButtonData>();
+    }
+    static bool handle_event(WaControl * control, WaUI * ui, WaEvent event, Vec2 pos_offset)
+    {
+        return false;
+    }
+    static void render(WaControl * control, WaUI * ui, WaRenderAPI * api)
+    {
+        auto data = control->type_info.get_data<WaButtonData>();
+        auto str = data->label.data();
+        
+        auto available_size = control->rect.size;
+        available_size -= control->padding.a;
+        available_size -= control->padding.b;
+        
+        auto string_size = Vec2{ui->string_get_width(str), ui->string_get_height(str)};
+        
+        auto pad = (available_size - string_size) / 2 + control->padding.a;
+        
+        ui->render_string(api, pad.x, pad.y, str, control->compute_full_modulate());
+    }
+    static Vec2 get_min_size(WaControl * control, WaUI * ui)
+    {
+        auto data = control->type_info.get_data<WaButtonData>();
+        auto str = data->label.data();
+        
+        auto string_size = Vec2{ui->string_get_width(str), ui->string_get_height(str)};
+        string_size += control->padding.a;
+        string_size += control->padding.b;
+        return string_size;
+    }
+};
+
 struct WaScrollerData
 {
     float size = 50.0;
@@ -974,13 +1003,16 @@ struct WaLineEdit
                     
                     if ((event.data & WaEvent::ActionMod::CTRL) && event.subtype == WaEvent::Action::LEFT)
                     {
+                        // move left one
                         new_cursor = std::clamp(prev_pos_utf8(text.data(), new_cursor), 0, (int)text.size());
+                        // skip over spaces
                         auto kind = codepoint_kind(codepoint_utf8(text.data() + new_cursor));
                         while (kind == 1 && new_cursor != 0)
                         {
                             new_cursor = std::clamp(prev_pos_utf8(text.data(), new_cursor), 0, (int)text.size());
                             kind = codepoint_kind(codepoint_utf8(text.data() + new_cursor));
                         }
+                        // skip over chunk of alike characters
                         while (new_cursor != 0)
                         {
                             auto next_cursor = std::clamp(prev_pos_utf8(text.data(), new_cursor), 0, (int)text.size());
@@ -988,17 +1020,20 @@ struct WaLineEdit
                                 break;
                             new_cursor = next_cursor;
                         }
+                        // move right one if not at far left
                         if (new_cursor != 0 && new_cursor < (int)text.size())
                             new_cursor = std::clamp(next_pos_utf8(text.data(), new_cursor), 0, (int)text.size());
                     }
                     else if ((event.data & WaEvent::ActionMod::CTRL) && event.subtype == WaEvent::Action::RIGHT)
                     {
                         auto kind = codepoint_kind(codepoint_utf8(text.data() + new_cursor));
+                        // skip over spaces
                         while (kind == 1 && new_cursor < (int)text.size())
                         {
                             new_cursor = std::clamp(next_pos_utf8(text.data(), new_cursor), 0, (int)text.size());
                             kind = codepoint_kind(codepoint_utf8(text.data() + new_cursor));
                         }
+                        // skip over chunk of alike characters
                         while (new_cursor < (int)text.size())
                         {
                             auto next_cursor = std::clamp(next_pos_utf8(text.data(), new_cursor), 0, (int)text.size());
@@ -1447,7 +1482,7 @@ void WaControl::render(WaUI * ui, WaRenderAPI * api)
         ui->render_ninepatch(api, ui->panel_texture,
             {{0, 0}, rect.size},
             {{1, 1}, {14, 14}},
-            {{3.5, 3.5}, {9, 9}},
+            {{4.5, 4.5}, {7, 7}},
             ui->loaded_texture_sizes["panel_texture"],
             bg_color * modulate_dynamic);
     }
